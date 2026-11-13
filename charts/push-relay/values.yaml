@@ -1,0 +1,102 @@
+# Default configuration for push-relay. Nothing here assumes a particular cluster, hostname or
+# APNs identity: every value an installer must supply is empty below, with a comment saying so.
+# The service's own options are documented in config/config.yaml of the repository.
+
+image:
+  repository: ghcr.io/frederikberg/push-relay
+  # Empty: defaults to .Chart.AppVersion. Set explicitly to pin a different tag.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+# The sparse override of config/config.yaml, written to a file the service reads at start: only
+# the values that differ from the defaults. Required: apns.key_id, apns.team_id and at least one
+# app. Rate limits are per process, so a second replica doubles every limit.
+#
+# config:
+#   apns:
+#     key_id: ABC123DEFG
+#     team_id: HIJ456KLMN
+#   tickets:
+#     legacy_app: example
+#   apps:
+#     example:
+#       id: 1
+#       topic: com.example.app
+#       payload_key: ex
+#       fallback_title: Example
+#       fallback_body: New notification
+config: {}
+
+apnsKey:
+  # Name of a Secret holding the .p8 key content, managed however you prefer (SOPS,
+  # sealed-secrets, Vault, or a plain `kubectl create secret`). This chart never creates or
+  # touches this Secret itself — an APNs private key has no business passing through Helm
+  # values or a rendered template. Mounted where the default apns.key_path points.
+  existingSecret: ""
+  existingSecretKey: "AuthKey.p8"
+
+ticketKeys:
+  # Name of a Secret holding the ticket-signing keys, in the "<id>:<64 hex>,<id>:<64 hex>,..."
+  # format of tickets.keys. The same existingSecret-only shape as apnsKey, for the same reason.
+  # Handed to the service as the environment variable the default tickets.keys refers to.
+  existingSecret: ""
+  existingSecretKey: "ticket-keys"
+
+service:
+  port: 8080
+
+ingress:
+  enabled: true
+  # Empty uses the cluster's default IngressClass. Set explicitly (e.g. "traefik", "nginx")
+  # when the cluster has more than one or defines none as default.
+  className: ""
+  # Required when ingress.enabled — the hostnames this service is reachable at. Left empty on
+  # purpose so an install cannot silently inherit a hostname that means nothing to a stranger's
+  # cluster. Every app build and server that uses this relay has one of these baked in, so
+  # removing one strands them.
+  hosts: []
+  annotations: {}
+  tls:
+    enabled: true
+    # Name of the Secret holding the TLS cert. If certManager.enabled below, cert-manager
+    # creates and populates this Secret; otherwise you must provide it yourself.
+    secretName: ""
+    certManager:
+      # A generic chart cannot assume cert-manager exists on every cluster it's installed to,
+      # so this is opt-in rather than assumed.
+      enabled: false
+      issuerName: ""
+      issuerKind: ClusterIssuer
+
+serviceMonitor:
+  # Opt-in Prometheus Operator ServiceMonitor — a generic chart installer may run no
+  # Prometheus at all.
+  enabled: false
+  interval: 1m
+  # Extra labels the ServiceMonitor needs to be picked up by a given Prometheus instance —
+  # e.g. `release: kube-prometheus-stack` is that chart's own convention for how its
+  # Prometheus CR selects ServiceMonitors by label.
+  labels: {}
+
+# The image's own uid/gid (65532, distroless/static's built-in "nonroot" user). No fsGroup:
+# this service writes nothing to disk, so there is no volume whose ownership needs fixing.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# No default requests: a generic chart cannot guess the right floor for a cluster it has never
+# run on.
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,68 @@
+# Every default of the relay. The image carries this file; it is the one place defaults live,
+# and the process refuses to start when a required value is still empty after the layers below
+# have been applied.
+#
+# Layers, later wins:
+#   1. this file
+#   2. the override file (-config-custom), sparse: only values that differ
+#   3. environment variables PUSH_RELAY_<SECTION>_<KEY> for any scalar outside `apps`
+#      (apns.key_id -> PUSH_RELAY_APNS_KEY_ID)
+# A string of the form ${NAME} is replaced by the environment variable NAME.
+
+server:
+  listen_addr: ":8080"
+  # Bound on a whole request body. A request can be under it and still carry an oversized
+  # blob, which app_limits.max_blob_chars bounds separately.
+  max_body_bytes: 8192
+
+# One Apple credential serves every app: a team key signs pushes for every bundle id of its
+# team, and each app only differs in its topic. Apps of a different Apple team need their own
+# relay instance.
+apns:
+  # Required. From App Store Connect; neither is secret.
+  key_id: ""
+  team_id: ""
+  # The .p8 private key file. The file is the one secret here.
+  key_path: /secrets/apns/AuthKey.p8
+  # Bound on one push's whole round trip to Apple.
+  send_timeout_seconds: 30
+
+tickets:
+  # "<id>:<64 hex>,<id>:<64 hex>,...": AES-256 keys, id 0-255. The first entry seals new
+  # tickets, every entry opens. Retiring a key means dropping its entry; tickets sealed under it
+  # then stop opening and the app registers again.
+  keys: "${TICKET_KEYS}"
+  # How long a ticket stays valid from the moment it was issued.
+  ttl_days: 90
+  # Name of the app that a version 1 ticket (issued before tickets named an app) and a request
+  # without `app` belong to. Empty rejects both. Set only while phones that hold version 1
+  # tickets exist.
+  legacy_app: ""
+
+# Per source address, shared by every app. Enforced in memory and reset by a restart.
+ip_limits:
+  pushes_per_hour: 1200
+  registrations_per_hour: 30
+
+# Per ticket, applied to every app unless the app's own `limits` names the key.
+app_limits:
+  alert_per_ticket_per_hour: 60
+  alert_per_ticket_burst: 30
+  alert_per_ticket_per_day: 500
+  background_per_ticket_per_hour: 12
+  # Bound on the base64 blob of an alert.
+  max_blob_chars: 3072
+
+# The apps this relay pushes for. At least one is required; none is configured here because a
+# topic, bundle id and banner text belong to a deployment.
+#
+# apps:
+#   example:                       # the name callers send as `app`: lowercase letters, digits, -
+#     id: 1                        # 1-255, unique, sealed into tickets: never reuse or change it
+#     topic: com.example.app       # APNs topic: the bundle id of the app
+#     payload_key: ex              # key under which the blob reaches the app's notification extension
+#     fallback_title: Example      # what Apple shows until the extension replaces it
+#     fallback_body: New notification
+#     limits:                      # optional, sparse overrides of app_limits
+#       max_blob_chars: 4096
+apps: {}

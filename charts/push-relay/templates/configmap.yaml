@@ -1,0 +1,24 @@
+{{- if not .Values.apnsKey.existingSecret }}
+{{- fail "Set apnsKey.existingSecret — the chart never creates a Secret for an APNs private key." }}
+{{- end }}
+{{- if not .Values.ticketKeys.existingSecret }}
+{{- fail "Set ticketKeys.existingSecret — the chart never creates a Secret for the ticket-signing keys." }}
+{{- end }}
+{{- if not (dig "apns" "key_id" "" .Values.config) }}
+{{- fail "Set config.apns.key_id." }}
+{{- end }}
+{{- if not (dig "apns" "team_id" "" .Values.config) }}
+{{- fail "Set config.apns.team_id." }}
+{{- end }}
+{{- if not (dig "apps" dict .Values.config) }}
+{{- fail "Set config.apps with at least one app." }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "push-relay.fullname" . }}-config
+  labels:
+    {{- include "push-relay.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- toYaml .Values.config | nindent 4 }}
