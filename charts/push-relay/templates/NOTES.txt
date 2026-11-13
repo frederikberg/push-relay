@@ -1,0 +1,25 @@
+push-relay is installed.
+
+{{- if .Values.ingress.enabled }}
+Relay base URLs:
+{{- range .Values.ingress.hosts }}
+  https://{{ . }}
+{{- end }}
+{{- else }}
+Ingress is disabled — reach the Service ({{ include "push-relay.fullname" . }}, port
+{{ .Values.service.port }}) however your cluster routes internal traffic, or enable ingress.
+{{- end }}
+
+Check it is healthy:
+  kubectl -n {{ .Release.Namespace }} get pods -l {{ include "push-relay.selectorLabels" . | replace "\n" "," }}
+{{- if .Values.ingress.enabled }}
+  curl https://{{ index .Values.ingress.hosts 0 }}/healthz
+{{- end }}
+
+Apps served: {{ keys .Values.config.apps | sortAlpha | join ", " }}
+{{- if .Values.serviceMonitor.enabled }}
+Metrics are scraped by whatever Prometheus selects ServiceMonitors with the labels you set in
+serviceMonitor.labels.
+{{- else }}
+Set serviceMonitor.enabled to have this cluster's Prometheus scrape /metrics for you.
+{{- end }}

@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "push-relay.fullname" . }}
+  labels:
+    {{- include "push-relay.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "push-relay.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http

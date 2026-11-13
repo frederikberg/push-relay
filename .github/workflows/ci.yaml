@@ -1,0 +1,214 @@
+# 🚨 GitHub-hosted runners only. This workflow triggers on `pull_request`, and for that trigger
+# GitHub runs the workflow file as it exists on the pull request's own head: on a public
+# repository a stranger can rewrite it in their fork, so naming a self-hosted runner here would
+# hand them a shell on whatever machine it names. Standard runners are unmetered for public
+# repositories, so there is no cost argument for doing otherwise.
+#
+# Pull requests only: main takes nothing but rebase merges of a branch that passed `CI ok` with
+# the up-to-date requirement, so a run on main would repeat the tree that was just tested.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      chart: ${{ steps.filter.outputs.chart }}
+      image: ${{ steps.filter.outputs.image }}
+      release: ${{ steps.filter.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            go:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'config/**'
+              - '.github/workflows/ci.yaml'
+            chart:
+              - 'charts/**'
+              - 'config/**'
+              - '.github/workflows/ci.yaml'
+            image:
+              - 'Dockerfile'
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'config/**'
+              - 'scripts/smoke-image.sh'
+              - '.github/workflows/ci.yaml'
+            release:
+              - 'scripts/**'
+              - 'charts/push-relay/Chart.yaml'
+              - 'CHANGELOG.md'
+              - '.github/workflows/**'
+
+  go:
+    name: Vet, test, build
+    needs: detect
+    if: ${{ needs.detect.outputs.go == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Format
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Test
+        run: go test ./...
+
+  chart:
+    name: Helm chart
+    needs: detect
+    if: ${{ needs.detect.outputs.chart == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/setup-helm@v5
+        with: { version: v4.3.1 }
+
+      - name: Lint and template with representative values
+        # A template render catches what lint alone does not: a `required` guard that never
+        # fires because nothing exercises that value, a typo'd field reference that renders as
+        # an empty string instead of failing. The values exercise every optional resource
+        # (ingress with two hosts, TLS through cert-manager, ServiceMonitor).
+        run: |
+          cat > "$RUNNER_TEMP/values.yaml" <<'EOF'
+          apnsKey:
+            existingSecret: ci-apns-key
+          ticketKeys:
+            existingSecret: ci-ticket-keys
+          config:
+            apns:
+              key_id: CI0000TEST
+              team_id: CI0000TEST
+            apps:
+              example:
+                id: 1
+                topic: com.example.ci
+                payload_key: ex
+                fallback_title: Example
+                fallback_body: New notification
+          ingress:
+            className: nginx
+            hosts: [push.ci.example.com, relay.ci.example.com]
+            tls:
+              secretName: ci-tls
+              certManager:
+                enabled: true
+                issuerName: letsencrypt
+          serviceMonitor:
+            enabled: true
+          EOF
+          helm lint charts/push-relay -f "$RUNNER_TEMP/values.yaml"
+          helm template ci charts/push-relay -f "$RUNNER_TEMP/values.yaml" > /dev/null
+
+      - name: Template fails without each required value
+        # The opposite direction: a guard that never fires is indistinguishable from one that
+        # works. Each case omits exactly one required value and must make the render fail.
+        run: |
+          base=(--set apnsKey.existingSecret=k --set ticketKeys.existingSecret=t
+                --set config.apns.key_id=a --set config.apns.team_id=b
+                --set config.apps.x.id=1 --set ingress.hosts[0]=h --set ingress.tls.secretName=s)
+          helm template ci charts/push-relay "${base[@]}" > /dev/null
+          for omit in apnsKey.existingSecret ticketKeys.existingSecret config.apns.key_id \
+                      config.apns.team_id config.apps.x.id 'ingress.hosts[0]' ingress.tls.secretName; do
+            args=()
+            for ((i = 0; i < ${#base[@]}; i += 2)); do
+              case "${base[i+1]}" in "$omit="*) continue ;; esac
+              args+=("${base[i]}" "${base[i+1]}")
+            done
+            if helm template ci charts/push-relay "${args[@]}" > /dev/null 2>&1; then
+              echo "expected helm template to fail without $omit"
+              exit 1
+            fi
+            echo "refused without $omit"
+          done
+
+  image:
+    name: Image
+    needs: detect
+    if: ${{ needs.detect.outputs.image == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: push-relay:ci
+
+      - name: Smoke test
+        run: scripts/smoke-image.sh push-relay:ci
+
+  release:
+    name: Release scripts
+    needs: detect
+    if: ${{ needs.detect.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Shellcheck
+        run: shellcheck scripts/*.sh
+
+      - name: Versions agree and the changelog has their section
+        run: scripts/check-release-versions.sh
+
+  gate:
+    name: CI ok
+    needs: [detect, go, chart, image, release]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any required job did not succeed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          case " $RESULTS " in
+            *" failure "*|*" cancelled "*) exit 1 ;;
+          esac

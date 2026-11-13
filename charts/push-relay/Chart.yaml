@@ -1,0 +1,16 @@
+apiVersion: v2
+name: push-relay
+description: "Forwards encrypted push notifications to Apple for any number of apps"
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/frederikberg/push-relay
+sources:
+  - https://github.com/frederikberg/push-relay
+maintainers:
+  - name: Frederik Berg
+    url: https://frederikberg.com
+keywords:
+  - apns
+  - push-notifications

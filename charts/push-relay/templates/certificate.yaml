@@ -1,0 +1,17 @@
+{{- if and .Values.ingress.enabled .Values.ingress.tls.enabled .Values.ingress.tls.certManager.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "push-relay.fullname" . }}-tls
+  labels:
+    {{- include "push-relay.labels" . | nindent 4 }}
+spec:
+  secretName: {{ required "ingress.tls.secretName is required when ingress.tls.certManager.enabled" .Values.ingress.tls.secretName }}
+  issuerRef:
+    name: {{ required "ingress.tls.certManager.issuerName is required when ingress.tls.certManager.enabled" .Values.ingress.tls.certManager.issuerName }}
+    kind: {{ .Values.ingress.tls.certManager.issuerKind }}
+  dnsNames:
+    {{- range required "ingress.hosts is required" .Values.ingress.hosts }}
+    - {{ . }}
+    {{- end }}
+{{- end }}

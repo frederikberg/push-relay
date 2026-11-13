@@ -1,0 +1,38 @@
+{{- if .Values.ingress.enabled }}
+{{- $hosts := required "ingress.hosts is required when ingress.enabled" .Values.ingress.hosts }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "push-relay.fullname" . }}
+  labels:
+    {{- include "push-relay.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        {{- range $hosts }}
+        - {{ . }}
+        {{- end }}
+      secretName: {{ required "ingress.tls.secretName is required when ingress.tls.enabled (cert-manager fills it in when ingress.tls.certManager.enabled)" .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    {{- range $hosts }}
+    - host: {{ . }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "push-relay.fullname" $ }}
+                port:
+                  name: http
+    {{- end }}
+{{- end }}
