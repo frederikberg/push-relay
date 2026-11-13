@@ -106,7 +106,7 @@ jobs:
             | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Lint before publishing
-        run: helm lint charts/push-relay
+        run: helm lint charts/push-relay -f charts/push-relay/ci/values.yaml
 
       - name: Package and push
         run: |

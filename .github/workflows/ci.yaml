@@ -109,35 +109,8 @@ jobs:
         # an empty string instead of failing. The values exercise every optional resource
         # (ingress with two hosts, TLS through cert-manager, ServiceMonitor).
         run: |
-          cat > "$RUNNER_TEMP/values.yaml" <<'EOF'
-          apnsKey:
-            existingSecret: ci-apns-key
-          ticketKeys:
-            existingSecret: ci-ticket-keys
-          config:
-            apns:
-              key_id: CI0000TEST
-              team_id: CI0000TEST
-            apps:
-              example:
-                id: 1
-                topic: com.example.ci
-                payload_key: ex
-                fallback_title: Example
-                fallback_body: New notification
-          ingress:
-            className: nginx
-            hosts: [push.ci.example.com, relay.ci.example.com]
-            tls:
-              secretName: ci-tls
-              certManager:
-                enabled: true
-                issuerName: letsencrypt
-          serviceMonitor:
-            enabled: true
-          EOF
-          helm lint charts/push-relay -f "$RUNNER_TEMP/values.yaml"
-          helm template ci charts/push-relay -f "$RUNNER_TEMP/values.yaml" > /dev/null
+          helm lint charts/push-relay -f charts/push-relay/ci/values.yaml
+          helm template ci charts/push-relay -f charts/push-relay/ci/values.yaml > /dev/null
 
       - name: Template fails without each required value
         # The opposite direction: a guard that never fires is indistinguishable from one that

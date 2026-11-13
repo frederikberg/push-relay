@@ -1,0 +1,27 @@
+# Representative values that satisfy every required one and switch on every optional resource,
+# so lint and template in the checks and the release exercise the whole chart.
+apnsKey:
+  existingSecret: ci-apns-key
+ticketKeys:
+  existingSecret: ci-ticket-keys
+config:
+  apns:
+    key_id: CI0000TEST
+    team_id: CI0000TEST
+  apps:
+    example:
+      id: 1
+      topic: com.example.ci
+      payload_key: ex
+      fallback_title: Example
+      fallback_body: New notification
+ingress:
+  className: nginx
+  hosts: [push.ci.example.com, relay.ci.example.com]
+  tls:
+    secretName: ci-tls
+    certManager:
+      enabled: true
+      issuerName: letsencrypt
+serviceMonitor:
+  enabled: true
