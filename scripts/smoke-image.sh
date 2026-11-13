@@ -63,7 +63,10 @@ ticket_of() { sed -n 's/.*"ticket":"\([^"]*\)".*/\1/p'; }
 
 alpha_ticket="$(register alpha | ticket_of)"
 beta_ticket="$(register beta | ticket_of)"
-[ -n "$alpha_ticket" ] && [ -n "$beta_ticket" ] || { echo "FAIL: registration returned no ticket" >&2; exit 1; }
+if [ -z "$alpha_ticket" ] || [ -z "$beta_ticket" ]; then
+  echo "FAIL: registration returned no ticket" >&2
+  exit 1
+fi
 
 # A beta ticket named for alpha is refused before anything is sent to Apple.
 code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$base/v1/push" -H 'Content-Type: application/json' \
