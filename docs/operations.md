@@ -10,8 +10,9 @@ operator is able to see.
   Secret. One team key signs for every app of that team, so all apps of one relay belong to one
   team. Apps of another team need their own relay.
 - **Optionally, a Firebase service-account key** for Android: a Firebase project with the Android
-  apps added, and a service account allowed to send messages (Firebase console → Project settings
-  → Service accounts → Generate new private key). The JSON file stays in a Kubernetes Secret.
+  apps added, and a service account of its own that may only send messages (a dedicated one with
+  the Firebase Cloud Messaging API Admin role, never the project's default Admin SDK account,
+  which reaches far more). Its JSON key stays in a Kubernetes Secret.
   One project serves every app of the relay. Without it the relay delivers to iPhones only.
 - **Ticket signing keys** in a Secret: `<id>:<64 hex>,<id>:<64 hex>,...` with `openssl rand -hex 32`
   for each key. The first entry seals new tickets, every entry opens.
@@ -101,6 +102,12 @@ app. `tickets.legacy_app: <name>` makes the relay accept those: a version 1 tick
 that app, and a register or push request without `app` means it. Leave it empty on a relay that
 never served such tickets. Once every phone has registered again (the ticket lifetime is
 `tickets.ttl_days`), remove the setting.
+
+## Metrics
+
+Prometheus metrics are served on `server.metrics_addr` (default `:9090`), a second listener that
+no ingress should route to; the chart's Service exposes it inside the cluster only, for the
+optional ServiceMonitor. Without the chart, firewall that port.
 
 ## Rotating the ticket keys
 

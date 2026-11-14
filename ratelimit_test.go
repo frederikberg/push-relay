@@ -1,13 +1,14 @@
 package main
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
 
 func TestKeyedLimiterTripsAtBurst(t *testing.T) {
 	// 60/hour, burst 5: the first 5 calls at the same instant succeed, the 6th does not.
-	kl := newKeyedLimiter(60, time.Hour, 5)
+	kl := newKeyedLimiter(60, time.Hour, 5, 1000)
 	now := time.Now()
 
 	for i := 0; i < 5; i++ {
@@ -21,7 +22,7 @@ func TestKeyedLimiterTripsAtBurst(t *testing.T) {
 }
 
 func TestKeyedLimiterBucketsAreIndependentPerKey(t *testing.T) {
-	kl := newKeyedLimiter(60, time.Hour, 1)
+	kl := newKeyedLimiter(60, time.Hour, 1, 1000)
 	now := time.Now()
 
 	if !kl.Allow("ticket-a", now) {
@@ -37,7 +38,7 @@ func TestKeyedLimiterBucketsAreIndependentPerKey(t *testing.T) {
 
 func TestKeyedLimiterRefillsOverTime(t *testing.T) {
 	// 3600/hour == 1/second, burst 1: exhausted immediately, but refilled a second later.
-	kl := newKeyedLimiter(3600, time.Hour, 1)
+	kl := newKeyedLimiter(3600, time.Hour, 1, 1000)
 	now := time.Now()
 
 	if !kl.Allow("ticket-a", now) {
@@ -52,7 +53,7 @@ func TestKeyedLimiterRefillsOverTime(t *testing.T) {
 }
 
 func TestKeyedLimiterSweepDropsOnlyIdleKeys(t *testing.T) {
-	kl := newKeyedLimiter(60, time.Hour, 5)
+	kl := newKeyedLimiter(60, time.Hour, 5, 1000)
 	now := time.Now()
 
 	kl.Allow("idle", now)
@@ -77,7 +78,7 @@ func TestKeyedLimiterSweepDropsOnlyIdleKeys(t *testing.T) {
 }
 
 func TestTicketLimitersEnforceScopesIndependently(t *testing.T) {
-	rl := NewTicketLimiters(TicketLimits{AlertPerHour: 2, AlertBurst: 2, AlertPerDay: 100, BackgroundPerHour: 1})
+	rl := NewTicketLimiters(TicketLimits{AlertPerHour: 2, AlertBurst: 2, AlertPerDay: 100, BackgroundPerHour: 1, MaxKeys: 1000})
 	now := time.Now()
 
 	if !rl.Alert.Allow("t1", now) || !rl.Alert.Allow("t1", now) {
@@ -94,12 +95,31 @@ func TestTicketLimitersEnforceScopesIndependently(t *testing.T) {
 }
 
 func TestRetryAfterIsPositiveForEveryScope(t *testing.T) {
-	tl := NewTicketLimiters(TicketLimits{AlertPerHour: 60, AlertBurst: 30, AlertPerDay: 500, BackgroundPerHour: 12})
-	il := NewIPLimiters(IPLimits{PushesPerHour: 1200, RegistrationsPerHour: 30})
+	tl := NewTicketLimiters(TicketLimits{AlertPerHour: 60, AlertBurst: 30, AlertPerDay: 500, BackgroundPerHour: 12, MaxKeys: 1000})
+	il := NewIPLimiters(IPLimits{PushesPerHour: 1200, RegistrationsPerHour: 30, MaxKeys: 1000})
 
 	for _, l := range []*keyedLimiter{tl.Alert, tl.AlertDaily, tl.Background, il.Pushes, il.Registrations} {
 		if l.RetryAfter() <= 0 {
 			t.Errorf("RetryAfter for a configured scope = %v, want > 0", l.RetryAfter())
 		}
+	}
+}
+
+func TestKeyedLimiterForgetsTheLeastRecentlyUsedPastItsCap(t *testing.T) {
+	kl := newKeyedLimiter(60, time.Hour, 1, 100)
+	now := time.Now()
+	for i := 0; i < 1000; i++ {
+		kl.Allow(strconv.Itoa(i), now.Add(time.Duration(i)*time.Second))
+	}
+	if n := len(kl.limiters); n > 100 {
+		t.Fatalf("tracked keys = %d, want at most 100", n)
+	}
+	// The newest key survived, and being tracked still means being limited.
+	last := now.Add(999 * time.Second)
+	if kl.Allow("999", last) {
+		t.Error("the most recent key lost its bucket")
+	}
+	if _, ok := kl.limiters["0"]; ok {
+		t.Error("the oldest key was kept")
 	}
 }

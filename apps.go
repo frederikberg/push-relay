@@ -112,6 +112,7 @@ func buildApps(raw map[string]rawApp, legacyName string) (*Apps, error) {
 			{"alert_per_ticket_per_day", l.AlertPerTicketPerDay},
 			{"background_per_ticket_per_hour", l.BackgroundPerTicketPerHour},
 			{"max_blob_chars", l.MaxBlobChars},
+			{"max_tracked_keys", l.MaxTrackedKeys},
 		} {
 			if err := positive(where+".limits."+f.field, f.val); err != nil {
 				return nil, err
@@ -132,6 +133,7 @@ func buildApps(raw map[string]rawApp, legacyName string) (*Apps, error) {
 				AlertBurst:        l.AlertPerTicketBurst,
 				AlertPerDay:       l.AlertPerTicketPerDay,
 				BackgroundPerHour: l.BackgroundPerTicketPerHour,
+				MaxKeys:           l.MaxTrackedKeys,
 			}),
 		}
 		apps.byName[name] = app

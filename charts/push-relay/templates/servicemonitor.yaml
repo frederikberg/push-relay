@@ -13,7 +13,7 @@ spec:
     matchLabels:
       {{- include "push-relay.selectorLabels" . | nindent 6 }}
   endpoints:
-    - port: http
+    - port: metrics
       path: /metrics
       interval: {{ .Values.serviceMonitor.interval }}
 {{- end }}

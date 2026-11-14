@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -86,6 +88,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/register", s.handleRegister)
 	mux.HandleFunc("POST /v1/push", s.handlePush)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	return mux
+}
+
+// MetricsHandler serves the Prometheus series. It is a separate handler for a separate listener:
+// nothing on the public one exposes it.
+func (s *Server) MetricsHandler() http.Handler {
+	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", promhttp.HandlerFor(s.metrics.registry, promhttp.HandlerOpts{}))
 	return mux
 }
@@ -478,17 +487,33 @@ func isValidApnsTokenHex(s string) bool {
 // clientIP trusts X-Forwarded-For's first entry when present. The Service this runs behind has
 // no public ClusterIP of its own — every caller arrives through the ingress proxy in front of
 // it, which is the one thing allowed to set this header, so there is no stranger able to spoof
-// it directly against the pod.
+// it directly against the pod. An IPv6 address is reduced to its /64, the smallest block an
+// operator hands out, so one subscriber cannot mint a rate-limit bucket per address.
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		first := xff
 		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
+			first = xff[:i]
 		}
-		return strings.TrimSpace(xff)
+		return limiterKey(strings.TrimSpace(first))
 	}
 	host := r.RemoteAddr
-	if i := strings.LastIndexByte(host, ':'); i >= 0 {
-		return host[:i]
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
 	}
-	return host
+	return limiterKey(host)
+}
+
+// limiterKey is the rate-limit key of a source address: IPv4 and anything unparseable as it is,
+// IPv6 as its /64 prefix.
+func limiterKey(addr string) string {
+	ip, err := netip.ParseAddr(addr)
+	if err != nil || ip.Is4() || ip.Is4In6() {
+		return addr
+	}
+	prefix, err := ip.Prefix(64)
+	if err != nil {
+		return addr
+	}
+	return prefix.String()
 }

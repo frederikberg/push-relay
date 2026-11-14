@@ -60,6 +60,13 @@ func main() {
 	defer close(done)
 
 	httpServer := &http.Server{Addr: cfg.ListenAddr, Handler: server.Handler()}
+	metricsServer := &http.Server{Addr: cfg.MetricsAddr, Handler: server.MetricsHandler()}
+	go func() {
+		if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("metrics server failed", "error", err)
+			stop()
+		}
+	}()
 	go func() {
 		apps := make([]string, 0, len(cfg.Apps.All()))
 		for _, app := range cfg.Apps.All() {
@@ -79,4 +86,5 @@ func main() {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Error("error during shutdown", "error", err)
 	}
+	_ = metricsServer.Shutdown(shutdownCtx)
 }

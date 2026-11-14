@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -22,6 +23,9 @@ type keyedLimiter struct {
 	limiters map[string]*limiterEntry
 	r        rate.Limit
 	burst    int
+	// maxKeys bounds the map: a caller able to vary its key (an address, a freshly registered
+	// ticket) must not be able to grow this relay's memory without limit.
+	maxKeys int
 	// retryAfter is the value reported in a 429's retry_after_seconds: the time for one token
 	// to regenerate, rounded up. An approximation — the bucket may refill sooner if it was only
 	// partially drained — but never too short an amount to wait.
@@ -35,11 +39,12 @@ type limiterEntry struct {
 
 // newKeyedLimiter builds a scope allowing perWindow events per window, refilling continuously,
 // with up to burst allowed at once.
-func newKeyedLimiter(perWindow int, window time.Duration, burst int) *keyedLimiter {
+func newKeyedLimiter(perWindow int, window time.Duration, burst, maxKeys int) *keyedLimiter {
 	return &keyedLimiter{
 		limiters: make(map[string]*limiterEntry),
 		r:        rate.Limit(float64(perWindow) / window.Seconds()),
 		burst:    burst,
+		maxKeys:  maxKeys,
 
 		retryAfter: durationPerToken(perWindow, window),
 	}
@@ -51,11 +56,37 @@ func (k *keyedLimiter) Allow(key string, now time.Time) bool {
 	defer k.mu.Unlock()
 	e, ok := k.limiters[key]
 	if !ok {
+		if len(k.limiters) >= k.maxKeys {
+			k.evictOldest()
+		}
 		e = &limiterEntry{limiter: rate.NewLimiter(k.r, k.burst)}
 		k.limiters[key] = e
 	}
 	e.lastUsed = now
 	return e.limiter.AllowN(now, 1)
+}
+
+// evictOldest drops the tenth of the keys that were used longest ago, so a full map costs one
+// sort per maxKeys/10 insertions rather than one per insertion. Forgetting a key resets its
+// bucket to full: under a flood the attacker's own entries are the youngest, so what is lost is
+// precision for quiet callers, never the relay's memory. The caller holds the lock.
+func (k *keyedLimiter) evictOldest() {
+	type aged struct {
+		key  string
+		used time.Time
+	}
+	all := make([]aged, 0, len(k.limiters))
+	for key, e := range k.limiters {
+		all = append(all, aged{key, e.lastUsed})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].used.Before(all[j].used) })
+	drop := k.maxKeys/10 + 1
+	if drop > len(all) {
+		drop = len(all)
+	}
+	for _, a := range all[:drop] {
+		delete(k.limiters, a.key)
+	}
 }
 
 // sweep drops any key untouched for longer than idleLimiterTTL.
@@ -80,6 +111,8 @@ type TicketLimits struct {
 	AlertBurst        int
 	AlertPerDay       int
 	BackgroundPerHour int
+	// MaxKeys bounds how many tickets each scope tracks at once.
+	MaxKeys int
 }
 
 // TicketLimiters holds one app's per-ticket scopes. Each app owns its own set, so one app's
@@ -92,9 +125,9 @@ type TicketLimiters struct {
 
 func NewTicketLimiters(l TicketLimits) *TicketLimiters {
 	return &TicketLimiters{
-		Alert:      newKeyedLimiter(l.AlertPerHour, time.Hour, l.AlertBurst),
-		AlertDaily: newKeyedLimiter(l.AlertPerDay, 24*time.Hour, l.AlertPerDay),
-		Background: newKeyedLimiter(l.BackgroundPerHour, time.Hour, l.BackgroundPerHour),
+		Alert:      newKeyedLimiter(l.AlertPerHour, time.Hour, l.AlertBurst, l.MaxKeys),
+		AlertDaily: newKeyedLimiter(l.AlertPerDay, 24*time.Hour, l.AlertPerDay, l.MaxKeys),
+		Background: newKeyedLimiter(l.BackgroundPerHour, time.Hour, l.BackgroundPerHour, l.MaxKeys),
 	}
 }
 
@@ -103,6 +136,8 @@ func NewTicketLimiters(l TicketLimits) *TicketLimiters {
 type IPLimits struct {
 	PushesPerHour        int
 	RegistrationsPerHour int
+	// MaxKeys bounds how many source addresses each scope tracks at once.
+	MaxKeys int
 }
 
 type IPLimiters struct {
@@ -112,8 +147,8 @@ type IPLimiters struct {
 
 func NewIPLimiters(l IPLimits) *IPLimiters {
 	return &IPLimiters{
-		Pushes:        newKeyedLimiter(l.PushesPerHour, time.Hour, l.PushesPerHour),
-		Registrations: newKeyedLimiter(l.RegistrationsPerHour, time.Hour, l.RegistrationsPerHour),
+		Pushes:        newKeyedLimiter(l.PushesPerHour, time.Hour, l.PushesPerHour, l.MaxKeys),
+		Registrations: newKeyedLimiter(l.RegistrationsPerHour, time.Hour, l.RegistrationsPerHour, l.MaxKeys),
 	}
 }
 

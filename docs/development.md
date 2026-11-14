@@ -26,7 +26,7 @@ CONTAINER_RUNTIME=podman scripts/smoke-image.sh push-relay:local
 ```
 
 `scripts/smoke-image.sh` starts the image with a generated throwaway key and walks health,
-registration for two apps, a refused cross-app push and the metrics, without contacting Apple.
+registration for two apps, a refused cross-app push, a refused Android registration and the metrics, without contacting Apple.
 
 ## Layout
 
