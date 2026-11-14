@@ -132,8 +132,9 @@ Errors:
   means: stop retrying this push and have the phone register again.
 - `410` — `{"reason": "Unregistered" | "BadDeviceToken" | "DeviceTokenNotForTopic"}`. Apple or
   Google has said this device token will never accept another push (for `fcm`: the token is
-  unregistered, malformed, or belongs to another app than the Android package). Delete whatever
-  local subscription record the ticket belongs to.
+  unregistered or malformed). Delete whatever local subscription record the ticket belongs to.
+  Nothing that could be the relay's own fault, such as a refused credential or a package
+  mismatch, is ever reported as `410`: it is a `502`.
 - `413` — the request body, or `blob`, exceeded the size limits.
 - `429` — `{"retry_after_seconds": <int>}`. The ticket or the caller's IP address hit a rate
   limit; back off for at least that long. Transient: retry later, don't drop anything.
@@ -147,7 +148,8 @@ Google's APIs, which are only called per request.
 
 ## `GET /metrics`
 
-Prometheus text format; every series carries the `app` it belongs to, or `none` when the request
+Prometheus text format, served on the separate `server.metrics_addr` listener and never on the
+public one; every series carries the `app` it belongs to, or `none` when the request
 never resolved to an app:
 
 - `pushrelay_push_total{app, platform="apns|fcm", type="alert|background", result="success|gone|ratelimited|failure|invalid_ticket|app_mismatch"}`
@@ -165,13 +167,14 @@ per-ticket ones.
 |---|---|
 | Alert pushes, per ticket | 60/hour (burst 30), 500/day |
 | Background pushes, per ticket | 12/hour |
-| Pushes, per source IP (all apps together) | 1200/hour |
-| Registrations, per source IP (all apps together) | 30/hour |
+| Pushes, per source address (all apps together) | 1200/hour |
+| Registrations, per source address (all apps together) | 30/hour |
 | Request body | 8 KB |
 | `blob` field | 3072 characters |
 
 The per-IP limits key on `X-Forwarded-For`'s first entry when the header is present, and on the
-TCP peer address otherwise. That is only safe behind a proxy that sets or overwrites the header
+TCP peer address otherwise; an IPv6 address counts as its /64. Each scope tracks at most
+`max_tracked_keys` keys and forgets the least recently used tenth when full. That is only safe behind a proxy that sets or overwrites the header
 itself rather than forwarding whatever a caller sent: one that appends to an attacker-supplied
 value lets the attacker's own first entry stand in for any IP they like. A reverse proxy may also
 apply its own, coarser rate limiting; that is a second, independent layer.

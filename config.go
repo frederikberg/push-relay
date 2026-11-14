@@ -22,6 +22,7 @@ const envPrefix = "PUSH_RELAY_"
 // getting them.
 type Config struct {
 	ListenAddr   string
+	MetricsAddr  string
 	MaxBodyBytes int64
 
 	// APNs identity. Neither id is secret — the .p8 key file is the one value that is.
@@ -47,6 +48,7 @@ type Config struct {
 type rawConfig struct {
 	Server struct {
 		ListenAddr   string `yaml:"listen_addr"`
+		MetricsAddr  string `yaml:"metrics_addr"`
 		MaxBodyBytes int64  `yaml:"max_body_bytes"`
 	} `yaml:"server"`
 	APNS struct {
@@ -68,6 +70,7 @@ type rawConfig struct {
 	IPLimits struct {
 		PushesPerHour        int `yaml:"pushes_per_hour"`
 		RegistrationsPerHour int `yaml:"registrations_per_hour"`
+		MaxTrackedKeys       int `yaml:"max_tracked_keys"`
 	} `yaml:"ip_limits"`
 	AppLimits rawAppLimits      `yaml:"app_limits"`
 	Apps      map[string]rawApp `yaml:"apps"`
@@ -79,6 +82,7 @@ type rawAppLimits struct {
 	AlertPerTicketPerDay       int `yaml:"alert_per_ticket_per_day"`
 	BackgroundPerTicketPerHour int `yaml:"background_per_ticket_per_hour"`
 	MaxBlobChars               int `yaml:"max_blob_chars"`
+	MaxTrackedKeys             int `yaml:"max_tracked_keys"`
 }
 
 type rawApp struct {
@@ -250,6 +254,13 @@ func buildConfig(raw rawConfig) (Config, error) {
 	if cfg.ListenAddr == "" {
 		return Config{}, fmt.Errorf("server.listen_addr is required")
 	}
+	cfg.MetricsAddr = raw.Server.MetricsAddr
+	if cfg.MetricsAddr == "" {
+		return Config{}, fmt.Errorf("server.metrics_addr is required")
+	}
+	if cfg.MetricsAddr == cfg.ListenAddr {
+		return Config{}, fmt.Errorf("server.metrics_addr must differ from server.listen_addr: metrics are never served on the public listener")
+	}
 	cfg.MaxBodyBytes = raw.Server.MaxBodyBytes
 	if err := positive("server.max_body_bytes", int(cfg.MaxBodyBytes)); err != nil {
 		return Config{}, err
@@ -300,7 +311,10 @@ func buildConfig(raw rawConfig) (Config, error) {
 	if err := positive("ip_limits.registrations_per_hour", raw.IPLimits.RegistrationsPerHour); err != nil {
 		return Config{}, err
 	}
-	cfg.IP = IPLimits{PushesPerHour: raw.IPLimits.PushesPerHour, RegistrationsPerHour: raw.IPLimits.RegistrationsPerHour}
+	if err := positive("ip_limits.max_tracked_keys", raw.IPLimits.MaxTrackedKeys); err != nil {
+		return Config{}, err
+	}
+	cfg.IP = IPLimits{PushesPerHour: raw.IPLimits.PushesPerHour, RegistrationsPerHour: raw.IPLimits.RegistrationsPerHour, MaxKeys: raw.IPLimits.MaxTrackedKeys}
 
 	if cfg.Apps, err = buildApps(raw.Apps, raw.Tickets.LegacyApp); err != nil {
 		return Config{}, err

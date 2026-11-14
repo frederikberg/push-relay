@@ -10,7 +10,11 @@
 # A string of the form ${NAME} is replaced by the environment variable NAME.
 
 server:
+  # The public API: register, push, healthz.
   listen_addr: ":8080"
+  # Prometheus metrics, on their own listener so an ingress in front of listen_addr can never
+  # expose them. Must differ from listen_addr.
+  metrics_addr: ":9090"
   # Bound on a whole request body. A request can be under it and still carry an oversized
   # blob, which app_limits.max_blob_chars bounds separately.
   max_body_bytes: 8192
@@ -55,6 +59,9 @@ tickets:
 ip_limits:
   pushes_per_hour: 1200
   registrations_per_hour: 30
+  # How many source addresses each scope tracks at once; past it the least recently used tenth
+  # is forgotten. Bounds memory against a caller that varies its address.
+  max_tracked_keys: 100000
 
 # Per ticket, applied to every app unless the app's own `limits` names the key.
 app_limits:
@@ -64,6 +71,8 @@ app_limits:
   background_per_ticket_per_hour: 12
   # Bound on the base64 blob of an alert.
   max_blob_chars: 3072
+  # How many tickets each of the app's scopes tracks at once, as for ip_limits.
+  max_tracked_keys: 100000
 
 # The apps this relay pushes for. At least one is required; none is configured here because a
 # topic, bundle id and banner text belong to a deployment.

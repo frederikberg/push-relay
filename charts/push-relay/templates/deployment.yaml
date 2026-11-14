@@ -30,6 +30,9 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            # Where server.metrics_addr listens; the ingress never routes to it.
+            - name: metrics
+              containerPort: 9090
           env:
             - name: TICKET_KEYS
               valueFrom:

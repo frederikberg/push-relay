@@ -197,7 +197,8 @@ func TestClassifyFCM(t *testing.T) {
 	}{
 		{"accepted", 200, `{"name":"projects/p/messages/1"}`, "", PushOutcome{Status: 202, ApnsID: "projects/p/messages/1"}},
 		{"unregistered", 404, unregistered, "", PushOutcome{Status: 410, Reason: "Unregistered"}},
-		{"another sender", 403, senderMismatch, "", PushOutcome{Status: 410, Reason: "DeviceTokenNotForTopic"}},
+		{"another sender is not a dead device", 403, senderMismatch, "", PushOutcome{Status: 502, Reason: "SENDER_ID_MISMATCH"}},
+		{"permission denied is the relay's credential", 403, `{"error":{"code":403,"status":"PERMISSION_DENIED"}}`, "", PushOutcome{Status: 502, Reason: "PERMISSION_DENIED"}},
 		{"malformed token", 400, badToken, "", PushOutcome{Status: 410, Reason: "BadDeviceToken"}},
 		{"other bad argument is our bug, not the device's", 400, badOther, "", PushOutcome{Status: 502, Reason: "INVALID_ARGUMENT"}},
 		{"unknown project is not a dead device", 404, `{"error":{"code":404,"status":"NOT_FOUND"}}`, "", PushOutcome{Status: 502, Reason: "NOT_FOUND"}},

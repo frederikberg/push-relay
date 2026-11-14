@@ -10,6 +10,7 @@ runtime="${CONTAINER_RUNTIME:-docker}"
 work="$(mktemp -d)"
 name="push-relay-smoke-$$"
 port="${SMOKE_PORT:-18080}"
+metrics_port="${SMOKE_METRICS_PORT:-19090}"
 
 # shellcheck disable=SC2329  # invoked through the EXIT trap
 cleanup() {
@@ -42,7 +43,7 @@ apps:
 YAML
 chmod 644 "$work/AuthKey.p8" "$work/config.yaml"
 
-"$runtime" run -d --name "$name" -p "127.0.0.1:$port:8080" \
+"$runtime" run -d --name "$name" -p "127.0.0.1:$port:8080" -p "127.0.0.1:$metrics_port:9090" \
   -e TICKET_KEYS="1:$(openssl rand -hex 32)" \
   -v "$work/config.yaml:/config-custom/config.yaml:ro" \
   -v "$work/AuthKey.p8:/secrets/apns/AuthKey.p8:ro" \
@@ -79,7 +80,10 @@ code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$base/v1/register" -H '
   -d '{"app":"alpha","platform":"fcm","token":"abcdefghijklmnopqrstuvwxyz:0123456789"}')"
 [ "$code" = "400" ] || { echo "FAIL: fcm registration without a key answered $code, want 400" >&2; exit 1; }
 
-curl -fsS "$base/metrics" | grep -q 'pushrelay_register_total{app="beta",platform="apns",result="success"} 1' \
+# Metrics live on their own listener, never on the public one.
+code="$(curl -sS -o /dev/null -w '%{http_code}' "$base/metrics")"
+[ "$code" = "404" ] || { echo "FAIL: /metrics on the public listener answered $code, want 404" >&2; exit 1; }
+curl -fsS "http://127.0.0.1:$metrics_port/metrics" | grep -q 'pushrelay_register_total{app="beta",platform="apns",result="success"} 1' \
   || { echo "FAIL: metrics miss the beta registration" >&2; exit 1; }
 
 echo "OK"

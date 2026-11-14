@@ -19,6 +19,10 @@ All notable changes to this project are documented here. The format follows
 - Options: `fcm.key_path` (the Firebase service-account key; empty leaves Android off),
   `fcm.api_base`, `fcm.send_timeout_seconds`, and `android_package` per app. The chart takes an
   optional `fcmKey.existingSecret`.
+- Metrics are served on their own listener (`server.metrics_addr`), never on the public one; the
+  chart's Service and ServiceMonitor use it.
+- Rate-limit state is bounded (`max_tracked_keys` per scope, least recently used forgotten first)
+  and IPv6 sources count as their /64.
 - Metrics carry a `platform` label on `pushrelay_push_total` and `pushrelay_register_total`.
 
 ### Changed

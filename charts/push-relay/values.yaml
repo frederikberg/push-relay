@@ -55,6 +55,9 @@ ticketKeys:
 
 service:
   port: 8080
+  # The Prometheus listener, internal to the cluster: the ingress routes only to `port`. The
+  # container listens on 9090 (the default of server.metrics_addr); change both together.
+  metricsPort: 9090
 
 ingress:
   enabled: true

@@ -57,6 +57,7 @@ func rawAppLimitsFrom(l TicketLimits, maxBlob int) rawAppLimits {
 		AlertPerTicketPerDay:       l.AlertPerDay,
 		BackgroundPerTicketPerHour: l.BackgroundPerHour,
 		MaxBlobChars:               maxBlob,
+		MaxTrackedKeys:             l.MaxKeys,
 	}
 }
 
@@ -91,11 +92,11 @@ func testServer(t *testing.T, pusher Pusher, ticket TicketLimits) (*Server, *Tic
 }
 
 func generousRateLimits() TicketLimits {
-	return TicketLimits{AlertPerHour: 1000, AlertBurst: 1000, AlertPerDay: 1000, BackgroundPerHour: 1000}
+	return TicketLimits{AlertPerHour: 1000, AlertBurst: 1000, AlertPerDay: 1000, BackgroundPerHour: 1000, MaxKeys: 1000}
 }
 
 func generousIPLimits() IPLimits {
-	return IPLimits{PushesPerHour: 1000, RegistrationsPerHour: 1000}
+	return IPLimits{PushesPerHour: 1000, RegistrationsPerHour: 1000, MaxKeys: 1000}
 }
 
 func doJSON(t *testing.T, h http.Handler, method, path string, body any) *httptest.ResponseRecorder {
@@ -163,7 +164,7 @@ func TestRegisterRejectsBadToken(t *testing.T) {
 func TestRegisterIsRateLimitedPerIP(t *testing.T) {
 	server, _ := testServerWith(t, &fakePusher{}, serverOpts{
 		ticket: generousRateLimits(),
-		ip:     IPLimits{PushesPerHour: 1000, RegistrationsPerHour: 1},
+		ip:     IPLimits{PushesPerHour: 1000, RegistrationsPerHour: 1, MaxKeys: 1000},
 	})
 
 	first := doJSON(t, server.Handler(), "POST", "/v1/register", registerRequest{App: alphaApp, ApnsToken: strings.Repeat("ab", 32)})
@@ -413,7 +414,7 @@ func TestMetricsEndpointExposesDeclaredNames(t *testing.T) {
 	doJSON(t, h, "POST", "/v1/push", pushRequest{App: alphaApp, Ticket: ticket, Type: "alert", Blob: "YWJjZA==", TTLSeconds: 60})
 	doJSON(t, h, "POST", "/v1/push", pushRequest{App: alphaApp, Ticket: ticket, Type: "alert", Blob: "YWJjZA==", TTLSeconds: 60})
 
-	rec := doJSON(t, h, "GET", "/metrics", nil)
+	rec := doJSON(t, server.MetricsHandler(), "GET", "/metrics", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
@@ -569,7 +570,7 @@ func TestIPPushLimitIsSharedAcrossApps(t *testing.T) {
 	pusher := &fakePusher{outcome: PushOutcome{Status: 202}}
 	server, _ := testServerWith(t, pusher, serverOpts{
 		ticket: generousRateLimits(),
-		ip:     IPLimits{PushesPerHour: 1, RegistrationsPerHour: 1000},
+		ip:     IPLimits{PushesPerHour: 1, RegistrationsPerHour: 1000, MaxKeys: 1000},
 	})
 	h := server.Handler()
 
@@ -586,7 +587,7 @@ func TestMetricsCarryTheAppLabel(t *testing.T) {
 	h := server.Handler()
 	pushFor(h, t, betaApp, registerFor(t, h, betaApp))
 
-	body := doJSON(t, h, "GET", "/metrics", nil).Body.String()
+	body := doJSON(t, server.MetricsHandler(), "GET", "/metrics", nil).Body.String()
 	for _, want := range []string{
 		`pushrelay_register_total{app="beta",platform="apns",result="success"} 1`,
 		`pushrelay_push_total{app="beta",platform="apns",result="success",type="alert"} 1`,
@@ -762,16 +763,47 @@ func TestFCMTicketsShareTheTicketRateLimits(t *testing.T) {
 }
 
 func TestMetricsSeparateThePlatforms(t *testing.T) {
-	h := fcmServer(t, &fakePusher{}, &fakePusher{outcome: PushOutcome{Status: 202}}).Handler()
+	server := fcmServer(t, &fakePusher{}, &fakePusher{outcome: PushOutcome{Status: 202}})
+	h := server.Handler()
 	pushFor(h, t, alphaApp, registerFCM(t, h, alphaApp))
 
-	body := doJSON(t, h, "GET", "/metrics", nil).Body.String()
+	body := doJSON(t, server.MetricsHandler(), "GET", "/metrics", nil).Body.String()
 	for _, want := range []string{
 		`pushrelay_register_total{app="alpha",platform="fcm",result="success"} 1`,
 		`pushrelay_push_total{app="alpha",platform="fcm",result="success",type="alert"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/metrics is missing %q", want)
+		}
+	}
+}
+
+func TestMetricsAreNotServedOnThePublicHandler(t *testing.T) {
+	server, _ := testServer(t, &fakePusher{}, generousRateLimits())
+	if rec := doJSON(t, server.Handler(), "GET", "/metrics", nil); rec.Code != http.StatusNotFound {
+		t.Errorf("/metrics on the public handler: status = %d, want 404", rec.Code)
+	}
+}
+
+func TestClientIPGroupsIPv6ByItsSlash64(t *testing.T) {
+	cases := []struct{ xff, remote, want string }{
+		{"203.0.113.7", "", "203.0.113.7"},
+		{"203.0.113.7, 10.0.0.1", "", "203.0.113.7"},
+		{"2001:db8:1:2:aaaa:bbbb:cccc:dddd", "", "2001:db8:1:2::/64"},
+		{"2001:db8:1:2:1111:2222:3333:4444, 10.0.0.1", "", "2001:db8:1:2::/64"},
+		{"::ffff:203.0.113.7", "", "::ffff:203.0.113.7"},
+		{"", "198.51.100.9:4444", "198.51.100.9"},
+		{"", "[2001:db8:5:6:7:8:9:a]:4444", "2001:db8:5:6::/64"},
+		{"not an address", "", "not an address"},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = c.remote
+		if c.xff != "" {
+			r.Header.Set("X-Forwarded-For", c.xff)
+		}
+		if got := clientIP(r); got != c.want {
+			t.Errorf("xff %q remote %q: clientIP = %q, want %q", c.xff, c.remote, got, c.want)
 		}
 	}
 }

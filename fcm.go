@@ -194,10 +194,11 @@ type fcmAnswer struct {
 }
 
 // classifyFCM turns one FCM response into this relay's own outcome — pure and separate from Push
-// so it is tested without a network call. Only answers that say the device token itself is
-// permanently unusable become 410: anything that could equally be this relay's own mistake (a
-// wrong project, a malformed message, a refused credential) stays a 502, so a configuration
-// error cannot make servers delete their subscriptions.
+// so it is tested without a network call. Only an answer that says this one device token is
+// permanently unusable (UNREGISTERED, or INVALID_ARGUMENT naming message.token) becomes 410:
+// anything that could equally be this relay's own mistake (a wrong project, a sender or package
+// mismatch, a malformed message, a refused credential) stays a 502, since a 410 makes servers
+// delete the subscription and a configuration error would then delete every Android device.
 func classifyFCM(statusCode int, body []byte, retryAfter string) PushOutcome {
 	var a fcmAnswer
 	_ = json.Unmarshal(body, &a)
@@ -221,8 +222,6 @@ func classifyFCM(statusCode int, body []byte, retryAfter string) PushOutcome {
 	switch {
 	case code == "UNREGISTERED":
 		return PushOutcome{Status: 410, Reason: "Unregistered"}
-	case code == "SENDER_ID_MISMATCH":
-		return PushOutcome{Status: 410, Reason: "DeviceTokenNotForTopic"}
 	case code == "INVALID_ARGUMENT" && tokenField:
 		return PushOutcome{Status: 410, Reason: "BadDeviceToken"}
 	case code == "QUOTA_EXCEEDED" || statusCode == http.StatusTooManyRequests:
