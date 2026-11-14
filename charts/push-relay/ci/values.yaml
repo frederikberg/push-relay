@@ -2,6 +2,8 @@
 # so lint and template in the checks and the release exercise the whole chart.
 apnsKey:
   existingSecret: ci-apns-key
+fcmKey:
+  existingSecret: ci-fcm-key
 ticketKeys:
   existingSecret: ci-ticket-keys
 config:
@@ -15,6 +17,7 @@ config:
       payload_key: ex
       fallback_title: Example
       fallback_body: New notification
+      android_package: com.example.ci
 ingress:
   className: nginx
   hosts: [push.ci.example.com, relay.ci.example.com]

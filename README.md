@@ -4,10 +4,11 @@
 [![Release](https://img.shields.io/github/v/release/frederikberg/push-relay)](https://github.com/frederikberg/push-relay/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A small, stateless relay that forwards encrypted push notifications to Apple for any number of
-iOS apps. Only an app's publisher can sign pushes for its bundle id, so a self-hosted server that
-wants to notify its phone sends the push through the publisher's relay instead of holding an
-Apple credential of its own. The relay forwards ciphertext and learns almost nothing.
+A small, stateless relay that forwards encrypted push notifications to Apple (iOS) and, when it is
+given a Firebase key, to Google's Firebase Cloud Messaging (Android) for any number of apps. Only
+an app's publisher can sign pushes for its bundle id or reach its Firebase project's devices, so a
+self-hosted server that wants to notify its phone sends the push through the publisher's relay
+instead of holding a push credential of its own. The relay forwards ciphertext and learns almost nothing.
 
 ## Why
 
@@ -19,7 +20,8 @@ Apple credential of its own. The relay forwards ciphertext and learns almost not
   that ticket is the only credential, and it works for one device of one app.
 - **Nothing is stored.** No database, no volume, no state to back up or lose.
 - **One relay for several apps.** Each app has its own topic, banner text, payload key and
-  limits, and a ticket cannot push to another app's topic. One Apple key, one deployment.
+  limits, and a ticket cannot push to another app's topic. One Apple key (and optionally one
+  Firebase key), one deployment.
 
 ## How it fits together
 
@@ -28,13 +30,13 @@ sequenceDiagram
     participant P as Phone (app)
     participant R as push-relay
     participant S as Self-hosted server
-    participant A as Apple (APNs)
-    P->>R: POST /v1/register {app, apns_token}
+    participant A as Apple (APNs) or Google (FCM)
+    P->>R: POST /v1/register {app, platform, token}
     R-->>P: sealed ticket
     P->>S: ticket + content key (the key never reaches the relay)
     S->>R: POST /v1/push {app, ticket, blob}
     R->>A: push to the ticket's device, blob unmodified
-    A->>P: notification, decrypted by the app's extension
+    A->>P: notification, decrypted by the app
 ```
 
 The relay opens the ticket to recover the device token and forwards the push. It never sees which
@@ -43,7 +45,8 @@ full contract.
 
 ## What you need
 
-To run your own relay: an Apple Developer team key for your apps, a Kubernetes cluster (or
+To run your own relay: an Apple Developer team key for your apps (and a Firebase project's
+service-account key for Android), a Kubernetes cluster (or
 anything that runs a container), and a hostname. To use someone else's relay, nothing: the app you
 install already knows its relay.
 
@@ -68,7 +71,8 @@ docker run -e TICKET_KEYS=... \
 
 Every option and its default is in [config/config.yaml](config/config.yaml), commented; a
 deployment supplies a sparse override file and, for scalars, `PUSH_RELAY_<SECTION>_<KEY>`
-environment variables. The secrets are the `.p8` file and `TICKET_KEYS`. The process refuses to
+environment variables. The secrets are the `.p8` file, the optional Firebase service-account key
+file and `TICKET_KEYS`. The process refuses to
 start on anything missing or misspelled.
 
 ## Docs
@@ -82,16 +86,19 @@ start on anything missing or misspelled.
 
 The relay sees, per request and only for its duration: the caller's IP address, the device token,
 the app, the push type, and the blob's size and timing. It never sees a notification's content, a
-badge count or an account. Logs and metrics carry the ticket's fingerprint, the app and the
-outcome; never a token, a ticket or a blob. Apple receives what any push carries: the device
-token, the topic, the fallback banner text and the encrypted blob.
+badge count or an account. Logs and metrics carry the ticket's fingerprint, the app, the platform
+and the outcome; never a token, a ticket or a blob. Apple receives what any push carries: the
+device token, the topic, the fallback banner text and the encrypted blob. Google receives the
+registration token, the app's package and the encrypted blob, with no readable text.
 
 ## Known limitations
 
 - **One relay is one point of failure.** While it is down, no push arrives; the apps still sync
   when opened.
 - **Rate limits are per process.** A restart resets them and a second replica doubles them.
-- **One Apple team per relay.** Apps of another team need their own instance.
+- **One Apple team and one Firebase project per relay.** Apps of another team or project need
+  their own instance.
+- **Android needs Google Play services** on the phone: FCM does not reach devices without them.
 - **No unregister.** A ticket ends by expiring or by its key being dropped.
 
 ## Prior art
@@ -101,8 +108,9 @@ runs, and Nextcloud's apps through its push proxy. This project shares no code w
 
 ## Not affiliated
 
-Apple, iOS and the Apple Push Notification service are trademarks of Apple Inc. This project is
-not affiliated with, endorsed or sponsored by Apple.
+Apple, iOS and the Apple Push Notification service are trademarks of Apple Inc.; Android, Firebase
+and Firebase Cloud Messaging are trademarks of Google LLC. This project is not affiliated with,
+endorsed or sponsored by either.
 
 ## License
 

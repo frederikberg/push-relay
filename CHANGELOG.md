@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-14
+
+### Added
+
+- Delivery to Android through Firebase Cloud Messaging, beside APNs. `POST /v1/register` takes a
+  `platform` (`apns` or `fcm`) and a `token`; `apns_token` keeps working for `apns`. Alerts go out
+  as high-priority FCM data messages restricted to the app's Android package, silent syncs as
+  normal-priority ones.
+- Ticket version 3 carries the platform. iPhone tickets keep the version 2 format, and every
+  earlier ticket keeps opening.
+- Options: `fcm.key_path` (the Firebase service-account key; empty leaves Android off),
+  `fcm.api_base`, `fcm.send_timeout_seconds`, and `android_package` per app. The chart takes an
+  optional `fcmKey.existingSecret`.
+- Metrics carry a `platform` label on `pushrelay_push_total` and `pushrelay_register_total`.
+
+### Changed
+
+- A failed push logs a short reason next to the result.
+
 ## [0.1.0] - 2026-11-13
 
 ### Added

@@ -21,13 +21,13 @@ func NewMetrics() *Metrics {
 
 	m.PushTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pushrelay_push_total",
-		Help: "Push attempts through /v1/push, by app, type and result.",
-	}, []string{"app", "type", "result"})
+		Help: "Push attempts through /v1/push, by app, platform, type and result.",
+	}, []string{"app", "platform", "type", "result"})
 
 	m.RegisterTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pushrelay_register_total",
-		Help: "Calls to /v1/register, by app and result.",
-	}, []string{"app", "result"})
+		Help: "Calls to /v1/register, by app, platform and result.",
+	}, []string{"app", "platform", "result"})
 
 	m.RateLimitedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pushrelay_ratelimited_total",

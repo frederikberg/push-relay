@@ -33,7 +33,7 @@ func TestTicketSealOpenRoundTrip(t *testing.T) {
 	deviceToken := []byte{0xde, 0xad, 0xbe, 0xef}
 	issuedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	ticket, err := tk.Seal(1, deviceToken, issuedAt)
+	ticket, err := tk.Seal(1, PlatformAPNS, deviceToken, issuedAt)
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestTicketSealOpenRoundTrip(t *testing.T) {
 
 func TestTicketOpenRejectsTamperedCiphertext(t *testing.T) {
 	tk := testKeys(t, "1:"+randomKeyHex(t))
-	ticket, err := tk.Seal(1, []byte{0x01, 0x02}, time.Now())
+	ticket, err := tk.Seal(1, PlatformAPNS, []byte{0x01, 0x02}, time.Now())
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestTicketOpenRejectsTamperedCiphertext(t *testing.T) {
 
 func TestTicketOpenRejectsNonCanonicalEncoding(t *testing.T) {
 	tk := testKeys(t, "1:"+randomKeyHex(t))
-	ticket, err := tk.Seal(1, []byte{0x01, 0x02, 0x03}, time.Now())
+	ticket, err := tk.Seal(1, PlatformAPNS, []byte{0x01, 0x02, 0x03}, time.Now())
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestTicketOpenRejectsNonCanonicalEncoding(t *testing.T) {
 func TestTicketOpenRejectsExpired(t *testing.T) {
 	tk := testKeys(t, "1:"+randomKeyHex(t))
 	issuedAt := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-	ticket, err := tk.Seal(1, []byte{0x01}, issuedAt)
+	ticket, err := tk.Seal(1, PlatformAPNS, []byte{0x01}, issuedAt)
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestTicketKeyRotation(t *testing.T) {
 	oldKeyHex := randomKeyHex(t)
 	newKeyHex := randomKeyHex(t)
 	oldKeys := testKeys(t, "1:"+oldKeyHex)
-	ticket, err := oldKeys.Seal(1, []byte{0xaa}, time.Now())
+	ticket, err := oldKeys.Seal(1, PlatformAPNS, []byte{0xaa}, time.Now())
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestTicketKeyRotation(t *testing.T) {
 
 	// A new ticket sealed after rotation is signed with the new key, id 2, and opens under a
 	// config that only knows the new key.
-	newTicket, err := rotated.Seal(1, []byte{0xbb}, time.Now())
+	newTicket, err := rotated.Seal(1, PlatformAPNS, []byte{0xbb}, time.Now())
 	if err != nil {
 		t.Fatalf("Seal after rotation: %v", err)
 	}
@@ -154,11 +154,11 @@ func TestTicketKeyRotation(t *testing.T) {
 
 func TestTicketIDIsStableAndDependsOnTheWholeTicket(t *testing.T) {
 	tk := testKeys(t, "1:"+randomKeyHex(t))
-	a, err := tk.Seal(1, []byte{0x01}, time.Now())
+	a, err := tk.Seal(1, PlatformAPNS, []byte{0x01}, time.Now())
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
-	b, err := tk.Seal(1, []byte{0x02}, time.Now())
+	b, err := tk.Seal(1, PlatformAPNS, []byte{0x02}, time.Now())
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestParseTicketKeysRejectsMalformed(t *testing.T) {
 func TestTicketCarriesItsApp(t *testing.T) {
 	tk := testKeys(t, "1:"+randomKeyHex(t))
 	for _, app := range []byte{1, 2, 255} {
-		ticket, err := tk.Seal(app, []byte{0x01, 0x02, 0x03}, time.Now())
+		ticket, err := tk.Seal(app, PlatformAPNS, []byte{0x01, 0x02, 0x03}, time.Now())
 		if err != nil {
 			t.Fatalf("Seal(app %d): %v", app, err)
 		}
@@ -210,7 +210,7 @@ func TestTicketCarriesItsApp(t *testing.T) {
 
 func TestSealRefusesTheReservedAppZero(t *testing.T) {
 	tk := testKeys(t, "1:"+randomKeyHex(t))
-	if _, err := tk.Seal(0, []byte{0x01}, time.Now()); err == nil {
+	if _, err := tk.Seal(0, PlatformAPNS, []byte{0x01}, time.Now()); err == nil {
 		t.Error("Seal(app 0) = nil error, want an error")
 	}
 }
@@ -250,7 +250,7 @@ func TestRealVersion1TicketStillOpens(t *testing.T) {
 
 func TestVersionsDoNotCrossOpen(t *testing.T) {
 	tk := testKeys(t, "1:"+randomKeyHex(t))
-	v2, err := tk.Seal(1, []byte{0x01, 0x02}, time.Now())
+	v2, err := tk.Seal(1, PlatformAPNS, []byte{0x01, 0x02}, time.Now())
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -262,5 +262,86 @@ func TestVersionsDoNotCrossOpen(t *testing.T) {
 	raw[0] = ticketVersionLegacy
 	if _, err := tk.Open(base64.RawURLEncoding.EncodeToString(raw), time.Hour, time.Now()); !errors.Is(err, ErrInvalidTicket) {
 		t.Errorf("v2 ciphertext relabelled as v1: error = %v, want ErrInvalidTicket", err)
+	}
+}
+
+func TestAPNSTicketsKeepTheVersion2Format(t *testing.T) {
+	tk := testKeys(t, "1:"+randomKeyHex(t))
+	ticket, err := tk.Seal(1, PlatformAPNS, []byte{0x01, 0x02}, time.Now())
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(ticket)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if raw[0] != ticketVersion {
+		t.Errorf("APNS ticket version = %d, want %d", raw[0], ticketVersion)
+	}
+	opened, err := tk.Open(ticket, time.Hour, time.Now())
+	if err != nil || opened.Platform != PlatformAPNS {
+		t.Errorf("Open = %+v, %v; want platform apns", opened, err)
+	}
+}
+
+func TestFCMTicketRoundTrip(t *testing.T) {
+	tk := testKeys(t, "1:"+randomKeyHex(t))
+	// Longer than one length byte can carry, so the two-byte prefix is exercised.
+	token := []byte(strings.Repeat("a1:_-", 80))
+	issuedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ticket, err := tk.Seal(3, PlatformFCM, token, issuedAt)
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	raw, _ := base64.RawURLEncoding.DecodeString(ticket)
+	if raw[0] != ticketVersionPlatform {
+		t.Errorf("FCM ticket version = %d, want %d", raw[0], ticketVersionPlatform)
+	}
+	opened, err := tk.Open(ticket, 90*24*time.Hour, issuedAt.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if opened.App != 3 || opened.Platform != PlatformFCM || string(opened.DeviceToken) != string(token) || !opened.IssuedAt.Equal(issuedAt) {
+		t.Errorf("opened = %+v", opened)
+	}
+}
+
+func TestSealRejectsUnknownPlatformAndOversizedToken(t *testing.T) {
+	tk := testKeys(t, "1:"+randomKeyHex(t))
+	if _, err := tk.Seal(1, Platform(9), []byte{1}, time.Now()); err == nil {
+		t.Error("unknown platform sealed")
+	}
+	if _, err := tk.Seal(1, PlatformFCM, make([]byte, maxTicketTokenBytes+1), time.Now()); err == nil {
+		t.Error("oversized FCM token sealed")
+	}
+	if _, err := tk.Seal(1, PlatformAPNS, make([]byte, 256), time.Now()); err == nil {
+		t.Error("oversized APNS token sealed")
+	}
+}
+
+func TestPlatformTicketRelabelledAsVersion2FailsToOpen(t *testing.T) {
+	tk := testKeys(t, "1:"+randomKeyHex(t))
+	ticket, err := tk.Seal(1, PlatformFCM, []byte("token-token-token"), time.Now())
+	if err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	raw, _ := base64.RawURLEncoding.DecodeString(ticket)
+	raw[0] = ticketVersion
+	if _, err := tk.Open(base64.RawURLEncoding.EncodeToString(raw), time.Hour, time.Now()); !errors.Is(err, ErrInvalidTicket) {
+		t.Errorf("v3 ciphertext relabelled as v2: error = %v, want ErrInvalidTicket", err)
+	}
+}
+
+// Version 3 carries a platform byte inside the authenticated plaintext; an unknown value opens
+// as nothing rather than as some default platform.
+func TestVersion3TicketWithUnknownPlatformIsInvalid(t *testing.T) {
+	tk := testKeys(t, "1:"+randomKeyHex(t))
+	plaintext := []byte{1, 9, 0, 1, 0xaa, 0, 0, 0, 0, 0, 0, 0, 0}
+	ticket, err := tk.seal(ticketVersionPlatform, ticketAADPlatform, plaintext)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	if _, err := tk.Open(ticket, time.Hour*24*365*100, time.Now()); !errors.Is(err, ErrInvalidTicket) {
+		t.Errorf("error = %v, want ErrInvalidTicket", err)
 	}
 }

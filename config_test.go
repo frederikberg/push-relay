@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const shippedDefaults = "config/config.yaml"
@@ -151,6 +152,11 @@ func TestInvalidConfigsAreRejected(t *testing.T) {
 		{"aps payload key", func(s string) string { return strings.Replace(s, "payload_key: al", "payload_key: aps", 1) }, "payload_key"},
 		{"unknown legacy app", func(s string) string { return s + "tickets:\n  legacy_app: ghost\n" }, "legacy_app"},
 		{"zero limit", func(s string) string { return s + "app_limits:\n  alert_per_ticket_per_hour: 0\n" }, "must be positive"},
+		{"bad android package", func(s string) string {
+			return strings.Replace(s, "payload_key: al", "payload_key: al\n    android_package: not-a-package", 1)
+		}, "android_package"},
+		{"no fcm api base", func(s string) string { return s + "fcm:\n  api_base: \"\"\n" }, "fcm.api_base"},
+		{"zero fcm timeout", func(s string) string { return s + "fcm:\n  send_timeout_seconds: 0\n" }, "fcm.send_timeout_seconds"},
 		{"missing key file", func(s string) string { return s + "" }, "not readable"},
 	}
 	for _, c := range cases {
@@ -192,5 +198,38 @@ func TestLegacyAppIsResolved(t *testing.T) {
 	}
 	if cfg.Apps.Legacy() == nil || cfg.Apps.Legacy().Name != "alpha" {
 		t.Errorf("legacy = %+v", cfg.Apps.Legacy())
+	}
+}
+
+func TestFCMIsOffByDefaultAndTheKeyPathComesFromTheEnvironment(t *testing.T) {
+	cfg, err := loadWith(t, minimalOverride)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.FCMKeyPath != "" {
+		t.Errorf("FCMKeyPath = %q, want empty: Android is off without a key", cfg.FCMKeyPath)
+	}
+	if cfg.FCMAPIBase != "https://fcm.googleapis.com" || cfg.FCMSendTimeout != 30*time.Second {
+		t.Errorf("fcm defaults = %q, %v", cfg.FCMAPIBase, cfg.FCMSendTimeout)
+	}
+
+	t.Setenv("PUSH_RELAY_FCM_KEY_PATH", "/secrets/fcm/service-account.json")
+	cfg, err = loadWith(t, minimalOverride)
+	if err != nil || cfg.FCMKeyPath != "/secrets/fcm/service-account.json" {
+		t.Errorf("FCMKeyPath = %q, err = %v", cfg.FCMKeyPath, err)
+	}
+}
+
+func TestAppAndroidPackageIsOptional(t *testing.T) {
+	cfg, err := loadWith(t, func(k string) string {
+		return minimalOverride(k) + "    android_package: com.example.alpha\n  beta:\n    id: 2\n    topic: t\n    payload_key: b\n    fallback_title: B\n    fallback_body: b\n"
+	})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	alpha, _ := cfg.Apps.ByName("alpha")
+	beta, _ := cfg.Apps.ByName("beta")
+	if alpha.AndroidPackage != "com.example.alpha" || beta.AndroidPackage != "" {
+		t.Errorf("android packages = %q, %q", alpha.AndroidPackage, beta.AndroidPackage)
 	}
 }

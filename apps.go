@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -23,6 +24,10 @@ type App struct {
 	// what an alert is actually about.
 	FallbackTitle string
 	FallbackBody  string
+	// AndroidPackage is the app's Android application id. Empty means the app has no Android
+	// build and the relay refuses to register one; FCM rejects a push whose token belongs to
+	// another package, so a wrong value fails loud rather than reaching no one.
+	AndroidPackage string
 	// MaxBlobChars bounds the blob field specifically, since a request can be under the body
 	// cap and still carry an oversized blob.
 	MaxBlobChars int
@@ -53,6 +58,8 @@ func (a *Apps) All() []*App {
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
+
+var androidPackagePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$`)
 
 func buildApps(raw map[string]rawApp, legacyName string) (*Apps, error) {
 	if len(raw) == 0 {
@@ -92,6 +99,9 @@ func buildApps(raw map[string]rawApp, legacyName string) (*Apps, error) {
 		if r.PayloadKey == "aps" {
 			return nil, fmt.Errorf("%s.payload_key must not be \"aps\"", where)
 		}
+		if r.AndroidPackage != "" && !androidPackagePattern.MatchString(r.AndroidPackage) {
+			return nil, fmt.Errorf("%s.android_package %q is not an Android application id", where, r.AndroidPackage)
+		}
 		l := r.Limits
 		for _, f := range []struct {
 			field string
@@ -109,13 +119,14 @@ func buildApps(raw map[string]rawApp, legacyName string) (*Apps, error) {
 		}
 
 		app := &App{
-			Name:          name,
-			ID:            byte(r.ID),
-			Topic:         r.Topic,
-			PayloadKey:    r.PayloadKey,
-			FallbackTitle: r.FallbackTitle,
-			FallbackBody:  r.FallbackBody,
-			MaxBlobChars:  l.MaxBlobChars,
+			Name:           name,
+			ID:             byte(r.ID),
+			Topic:          r.Topic,
+			PayloadKey:     r.PayloadKey,
+			FallbackTitle:  r.FallbackTitle,
+			FallbackBody:   r.FallbackBody,
+			AndroidPackage: r.AndroidPackage,
+			MaxBlobChars:   l.MaxBlobChars,
 			Limiters: NewTicketLimiters(TicketLimits{
 				AlertPerHour:      l.AlertPerTicketPerHour,
 				AlertBurst:        l.AlertPerTicketBurst,

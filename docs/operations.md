@@ -9,6 +9,10 @@ operator is able to see.
   Keys. The key id and team id go into the configuration; the `.p8` file stays in a Kubernetes
   Secret. One team key signs for every app of that team, so all apps of one relay belong to one
   team. Apps of another team need their own relay.
+- **Optionally, a Firebase service-account key** for Android: a Firebase project with the Android
+  apps added, and a service account allowed to send messages (Firebase console → Project settings
+  → Service accounts → Generate new private key). The JSON file stays in a Kubernetes Secret.
+  One project serves every app of the relay. Without it the relay delivers to iPhones only.
 - **Ticket signing keys** in a Secret: `<id>:<64 hex>,<id>:<64 hex>,...` with `openssl rand -hex 32`
   for each key. The first entry seals new tickets, every entry opens.
 - **A hostname** with DNS pointing at the cluster's ingress. Let it resolve before installing if
@@ -25,6 +29,8 @@ helm install push-relay oci://ghcr.io/frederikberg/charts/push-relay \
 ```yaml
 apnsKey:
   existingSecret: push-relay-apns-key        # key AuthKey.p8
+fcmKey:                                      # optional, switches on Android
+  existingSecret: push-relay-fcm-key         # key service-account.json
 ticketKeys:
   existingSecret: push-relay-ticket-keys     # key ticket-keys
 config:
@@ -38,6 +44,7 @@ config:
       payload_key: ex
       fallback_title: Example
       fallback_body: New notification
+      android_package: com.example.app       # optional, needed for Android devices
 ingress:
   className: nginx
   hosts: [push.example.com]
@@ -48,9 +55,10 @@ ingress:
       issuerName: letsencrypt
 ```
 
-The chart never creates the two Secrets: an Apple credential and the keys behind every ticket
-have no business passing through Helm values. It refuses to render without them, without the
-APNs ids, without an app and without a host. `values.yaml` documents every chart value.
+The chart never creates the Secrets: an Apple or Google credential and the keys behind every
+ticket have no business passing through Helm values. It refuses to render without the APNs key
+and ticket keys, without the APNs ids, without an app and without a host; the Firebase key is the
+one optional Secret. `values.yaml` documents every chart value.
 
 The container image is public; the chart needs no pull secret. The image is started as
 `push-relay -config /config/config.yaml -config-custom /config-custom/config.yaml`: the first file
@@ -65,19 +73,25 @@ variables for any scalar outside `apps`. `${NAME}` in a string is replaced by th
 variable `NAME`; the ticket keys reach the service that way. A missing required value, a
 misspelled key or an out-of-range number stops the process at start and names the offender.
 
-Only secrets are not in the configuration: the `.p8` file (path `apns.key_path`) and
-`TICKET_KEYS`.
+Only secrets are not in the configuration: the `.p8` file (path `apns.key_path`), the Firebase
+service-account file (path `fcm.key_path`) and `TICKET_KEYS`.
 
 ## Apps
 
 An app entry is its name, `id`, `topic`, `payload_key`, `fallback_title` and `fallback_body`, plus
-optional `limits` overriding the per-ticket defaults.
+optional `android_package` and `limits` overriding the per-ticket defaults.
 
 - **Adding an app** is adding an entry and restarting. The app's iOS build registers with
   `app: <name>`, and its notification extension reads the blob from `payload_key`.
 - **The `id` is sealed into every ticket.** Never reuse one for a different app and never change
   an app's: its tickets stop opening (the phones register again) or, worse, open for another app.
   The name can change freely; only the id binds tickets.
+- **Android** is available for an app when the relay has an `fcm.key_path` and the app has an
+  `android_package` (its Android application id). Registration for the `fcm` platform is refused
+  otherwise, and FCM itself rejects a token that belongs to another package. The Android build
+  registers with `platform: fcm` and the token its Firebase SDK provides; its messaging service
+  receives data messages carrying `type`, `v` and, for an alert, `b` (the blob). The Firebase
+  project must be the one the Android build's `google-services.json` came from.
 - **Removing an app** invalidates its tickets and its pushes answer `400 unknown app`.
 
 ## Legacy tickets

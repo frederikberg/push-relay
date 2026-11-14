@@ -66,7 +66,8 @@ func (p *APNSPusher) Push(ctx context.Context, req PushRequest) PushOutcome {
 
 	res, err := p.client.PushWithContext(ctx, buildNotification(req))
 	if err != nil {
-		return PushOutcome{Status: 502, Reason: err.Error()}
+		// Not err.Error(): a transport error names the request URL, which holds the device token.
+		return PushOutcome{Status: 502, Reason: transportReason(err)}
 	}
 	return classify(res.StatusCode, res.ApnsID, res.Reason)
 }

@@ -36,6 +36,10 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.ticketKeys.existingSecret }}
                   key: {{ .Values.ticketKeys.existingSecretKey }}
+            {{- if .Values.fcmKey.existingSecret }}
+            - name: PUSH_RELAY_FCM_KEY_PATH
+              value: /secrets/fcm/service-account.json
+            {{- end }}
           volumeMounts:
             - name: config
               mountPath: /config-custom
@@ -43,6 +47,11 @@ spec:
             - name: apns-key
               mountPath: /secrets/apns
               readOnly: true
+            {{- if .Values.fcmKey.existingSecret }}
+            - name: fcm-key
+              mountPath: /secrets/fcm
+              readOnly: true
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz
@@ -71,6 +80,14 @@ spec:
             items:
               - key: {{ .Values.apnsKey.existingSecretKey }}
                 path: AuthKey.p8
+        {{- if .Values.fcmKey.existingSecret }}
+        - name: fcm-key
+          secret:
+            secretName: {{ .Values.fcmKey.existingSecret }}
+            items:
+              - key: {{ .Values.fcmKey.existingSecretKey }}
+                path: service-account.json
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

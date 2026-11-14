@@ -1,6 +1,7 @@
 # Development
 
-Go, standard library plus `apns2`, Prometheus's client and a YAML parser. No generated code.
+Go, standard library plus `apns2`, `golang.org/x/oauth2` (the Firebase service-account sign-in),
+Prometheus's client and a YAML parser. No generated code.
 
 ## Build and test
 
@@ -11,8 +12,9 @@ gofmt -l .            # prints nothing when formatted
 go test ./...
 ```
 
-The tests need no network and no Apple credentials: pushes go to a fake, and notification
-payloads are built by a pure function the tests inspect.
+The tests need no network and no Apple or Google credentials: pushes go to a fake, notification
+payloads are built by pure functions the tests inspect, and the FCM sender is exercised against a
+local fake of Google's token and send endpoints.
 
 The chart and the image have their own checks, which CI runs when their files change:
 
@@ -36,6 +38,7 @@ registration for two apps, a refused cross-app push and the metrics, without con
 | `ticket.go` | ticket sealing and opening, ticket keys |
 | `handlers.go` | the HTTP API |
 | `apns.go` | building and sending the push, classifying Apple's answers |
+| `fcm.go` | the same for FCM: service-account sign-in, data message, Google's answers |
 | `ratelimit.go` | in-memory token buckets |
 | `metrics.go` | the Prometheus series |
 

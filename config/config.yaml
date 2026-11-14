@@ -27,6 +27,18 @@ apns:
   # Bound on one push's whole round trip to Apple.
   send_timeout_seconds: 30
 
+# Android delivery through Firebase Cloud Messaging. One Firebase project serves every app of
+# the relay. Optional: without a key the relay delivers to iPhones only and refuses the `fcm`
+# platform at registration.
+fcm:
+  # The service-account JSON key of the Firebase project. The file is the one secret here.
+  # Empty disables Android.
+  key_path: ""
+  # Origin of the FCM HTTP v1 API; the OAuth token endpoint comes from the key file.
+  api_base: https://fcm.googleapis.com
+  # Bound on one push's whole round trip to FCM.
+  send_timeout_seconds: 30
+
 tickets:
   # "<id>:<64 hex>,<id>:<64 hex>,...": AES-256 keys, id 0-255. The first entry seals new
   # tickets, every entry opens. Retiring a key means dropping its entry; tickets sealed under it
@@ -63,6 +75,8 @@ app_limits:
 #     payload_key: ex              # key under which the blob reaches the app's notification extension
 #     fallback_title: Example      # what Apple shows until the extension replaces it
 #     fallback_body: New notification
+#     android_package: com.example.app  # optional: the Android application id; without it the
+#                                  # app cannot register on the fcm platform
 #     limits:                      # optional, sparse overrides of app_limits
 #       max_blob_chars: 4096
 apps: {}

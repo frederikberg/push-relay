@@ -1,9 +1,9 @@
 apiVersion: v2
 name: push-relay
-description: "Forwards encrypted push notifications to Apple for any number of apps"
+description: "Forwards encrypted push notifications to Apple and Google for any number of apps"
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/frederikberg/push-relay
 sources:
@@ -13,4 +13,5 @@ maintainers:
     url: https://frederikberg.com
 keywords:
   - apns
+  - fcm
   - push-notifications
