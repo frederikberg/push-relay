@@ -101,7 +101,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: azure/setup-helm@v5
-        with: { version: v4.3.1 }
+        with: { version: v4.3.2 }
 
       - name: Lint and template with representative values
         # A template render catches what lint alone does not: a `required` guard that never
