@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Starts a built image with a throwaway APNs key and a minimal override, and walks the paths
-# that need no Apple connection: health, registration for two apps, a refused cross-app push and
-# the metrics.
+# that need no Apple connection: health, registration for two apps, a refused cross-app push, a
+# refused Android registration and the metrics.
 #   scripts/smoke-image.sh <image>        (CONTAINER_RUNTIME=podman to use podman)
 set -u
 
@@ -32,6 +32,7 @@ apps:
     payload_key: al
     fallback_title: Alpha
     fallback_body: New alpha
+    android_package: com.example.alpha
   beta:
     id: 2
     topic: com.example.beta
@@ -73,7 +74,12 @@ code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$base/v1/push" -H 'Cont
   -d "{\"app\":\"alpha\",\"ticket\":\"$beta_ticket\",\"type\":\"background\",\"ttl_seconds\":0}")"
 [ "$code" = "401" ] || { echo "FAIL: cross-app push answered $code, want 401" >&2; exit 1; }
 
-curl -fsS "$base/metrics" | grep -q 'pushrelay_register_total{app="beta",result="success"} 1' \
+# Without a Firebase key the relay delivers to iPhones only and refuses to issue Android tickets.
+code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$base/v1/register" -H 'Content-Type: application/json' \
+  -d '{"app":"alpha","platform":"fcm","token":"abcdefghijklmnopqrstuvwxyz:0123456789"}')"
+[ "$code" = "400" ] || { echo "FAIL: fcm registration without a key answered $code, want 400" >&2; exit 1; }
+
+curl -fsS "$base/metrics" | grep -q 'pushrelay_register_total{app="beta",platform="apns",result="success"} 1' \
   || { echo "FAIL: metrics miss the beta registration" >&2; exit 1; }
 
 echo "OK"

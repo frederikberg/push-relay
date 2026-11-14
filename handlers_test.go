@@ -36,7 +36,7 @@ const (
 func testApps(t *testing.T, limits TicketLimits, legacy bool) *Apps {
 	t.Helper()
 	raw := map[string]rawApp{
-		alphaApp: {ID: 1, Topic: "com.example.alpha", PayloadKey: "al", FallbackTitle: "Alpha", FallbackBody: "New alpha", Limits: rawAppLimitsFrom(limits, 3072)},
+		alphaApp: {ID: 1, Topic: "com.example.alpha", PayloadKey: "al", FallbackTitle: "Alpha", FallbackBody: "New alpha", AndroidPackage: "com.example.alpha.android", Limits: rawAppLimitsFrom(limits, 3072)},
 		betaApp:  {ID: 2, Topic: "com.example.beta", PayloadKey: "be", FallbackTitle: "Beta", FallbackBody: "New beta", Limits: rawAppLimitsFrom(limits, 100)},
 	}
 	legacyName := ""
@@ -65,6 +65,8 @@ type serverOpts struct {
 	ip     IPLimits
 	legacy bool
 	ttl    time.Duration
+	// fcm, when set, makes the relay deliver on the fcm platform too.
+	fcm Pusher
 }
 
 func testServerWith(t *testing.T, pusher Pusher, o serverOpts) (*Server, *TicketKeys) {
@@ -75,7 +77,11 @@ func testServerWith(t *testing.T, pusher Pusher, o serverOpts) (*Server, *Ticket
 	if ttl == 0 {
 		ttl = 90 * 24 * time.Hour
 	}
-	server := NewServer(testApps(t, o.ticket, o.legacy), tk, ttl, pusher, NewIPLimiters(o.ip), NewMetrics(), discard, 8192)
+	pushers := map[Platform]Pusher{PlatformAPNS: pusher}
+	if o.fcm != nil {
+		pushers[PlatformFCM] = o.fcm
+	}
+	server := NewServer(testApps(t, o.ticket, o.legacy), tk, ttl, pushers, NewIPLimiters(o.ip), NewMetrics(), discard, 8192)
 	return server, tk
 }
 
@@ -297,7 +303,7 @@ func TestPushRejectsInvalidTicket(t *testing.T) {
 func TestPushRejectsExpiredTicket(t *testing.T) {
 	server, tk := testServerWith(t, &fakePusher{}, serverOpts{ticket: generousRateLimits(), ip: generousIPLimits(), ttl: time.Hour})
 
-	oldTicket, err := tk.Seal(1, []byte{0x01, 0x02}, time.Now().Add(-2*time.Hour))
+	oldTicket, err := tk.Seal(1, PlatformAPNS, []byte{0x01, 0x02}, time.Now().Add(-2*time.Hour))
 	if err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -582,8 +588,187 @@ func TestMetricsCarryTheAppLabel(t *testing.T) {
 
 	body := doJSON(t, h, "GET", "/metrics", nil).Body.String()
 	for _, want := range []string{
-		`pushrelay_register_total{app="beta",result="success"} 1`,
-		`pushrelay_push_total{app="beta",result="success",type="alert"} 1`,
+		`pushrelay_register_total{app="beta",platform="apns",result="success"} 1`,
+		`pushrelay_push_total{app="beta",platform="apns",result="success",type="alert"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/metrics is missing %q", want)
+		}
+	}
+}
+
+// --- platforms ---
+
+const fcmTestToken = "cZ0abc123:APA91bHdef-ghi_jkl"
+
+func fcmServer(t *testing.T, apns, fcm *fakePusher) *Server {
+	t.Helper()
+	server, _ := testServerWith(t, apns, serverOpts{ticket: generousRateLimits(), ip: generousIPLimits(), fcm: fcm})
+	return server
+}
+
+func registerFCM(t *testing.T, h http.Handler, app string) string {
+	t.Helper()
+	rec := doJSON(t, h, "POST", "/v1/register", registerRequest{App: app, Platform: "fcm", Token: fcmTestToken})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("register fcm for %s: status = %d, body = %s", app, rec.Code, rec.Body.String())
+	}
+	return decodeBody[registerResponse](t, rec).Ticket
+}
+
+func TestFCMRegistrationIssuesATicketThatPushesThroughTheFCMPusher(t *testing.T) {
+	apns := &fakePusher{outcome: PushOutcome{Status: 202}}
+	fcm := &fakePusher{outcome: PushOutcome{Status: 202, ApnsID: "projects/p/messages/9"}}
+	h := fcmServer(t, apns, fcm).Handler()
+
+	rec := pushFor(h, t, alphaApp, registerFCM(t, h, alphaApp))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if decodeBody[pushResponse](t, rec).ApnsID != "projects/p/messages/9" {
+		t.Errorf("body = %s", rec.Body.String())
+	}
+	if apns.calls != 0 || fcm.calls != 1 {
+		t.Errorf("apns calls = %d, fcm calls = %d; want 0 and 1", apns.calls, fcm.calls)
+	}
+	if string(fcm.lastReq.DeviceToken) != fcmTestToken || fcm.lastReq.App.Name != alphaApp {
+		t.Errorf("fcm received %+v", fcm.lastReq)
+	}
+}
+
+func TestAPNSRegistrationStillGoesThroughTheAPNSPusher(t *testing.T) {
+	apns := &fakePusher{outcome: PushOutcome{Status: 202}}
+	fcm := &fakePusher{outcome: PushOutcome{Status: 202}}
+	h := fcmServer(t, apns, fcm).Handler()
+
+	// Both spellings of an APNs registration: the old field, and the platform form.
+	old := registerFor(t, h, alphaApp)
+	rec := doJSON(t, h, "POST", "/v1/register", registerRequest{App: alphaApp, Platform: "apns", Token: strings.Repeat("ab", 32)})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	for _, ticket := range []string{old, decodeBody[registerResponse](t, rec).Ticket} {
+		if got := pushFor(h, t, alphaApp, ticket); got.Code != http.StatusAccepted {
+			t.Fatalf("push status = %d", got.Code)
+		}
+	}
+	if apns.calls != 2 || fcm.calls != 0 {
+		t.Errorf("apns calls = %d, fcm calls = %d; want 2 and 0", apns.calls, fcm.calls)
+	}
+}
+
+func TestFCMRegistrationIsRefusedWhereTheRelayCannotDeliver(t *testing.T) {
+	// No FCM pusher configured.
+	h, _ := testServer(t, &fakePusher{}, generousRateLimits())
+	rec := doJSON(t, h.Handler(), "POST", "/v1/register", registerRequest{App: alphaApp, Platform: "fcm", Token: fcmTestToken})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("without an FCM key: status = %d, want 400", rec.Code)
+	}
+
+	// FCM configured, but beta has no Android package.
+	fh := fcmServer(t, &fakePusher{}, &fakePusher{}).Handler()
+	rec = doJSON(t, fh, "POST", "/v1/register", registerRequest{App: betaApp, Platform: "fcm", Token: fcmTestToken})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("app without an Android package: status = %d, want 400", rec.Code)
+	}
+}
+
+func TestRegisterRejectsAmbiguousOrMalformedPlatformFields(t *testing.T) {
+	h := fcmServer(t, &fakePusher{}, &fakePusher{}).Handler()
+	apnsToken := strings.Repeat("ab", 32)
+	cases := map[string]registerRequest{
+		"unknown platform":           {App: alphaApp, Platform: "web", Token: apnsToken},
+		"apns_token and token":       {App: alphaApp, Token: apnsToken, ApnsToken: apnsToken},
+		"apns_token on fcm":          {App: alphaApp, Platform: "fcm", ApnsToken: fcmTestToken},
+		"no token":                   {App: alphaApp, Platform: "fcm"},
+		"fcm token too short":        {App: alphaApp, Platform: "fcm", Token: "abc:def"},
+		"fcm token too long":         {App: alphaApp, Platform: "fcm", Token: strings.Repeat("a", maxFCMTokenLen+1)},
+		"fcm token with a quote":     {App: alphaApp, Platform: "fcm", Token: `abcdefghijklmnop"}`},
+		"fcm token with whitespace":  {App: alphaApp, Platform: "fcm", Token: "abcdefgh ijklmnopqrst"},
+		"hex token on apns, not hex": {App: alphaApp, Platform: "apns", Token: strings.Repeat("g", 32)},
+	}
+	for name, req := range cases {
+		if rec := doJSON(t, h, "POST", "/v1/register", req); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", name, rec.Code)
+		}
+	}
+}
+
+func TestFCMRegistrationAcceptsAFirebaseInstallationID(t *testing.T) {
+	h := fcmServer(t, &fakePusher{}, &fakePusher{}).Handler()
+	rec := doJSON(t, h, "POST", "/v1/register", registerRequest{App: alphaApp, Platform: "fcm", Token: "cX4w9-_dQkS0aBcDeFgH1x"})
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestFCMTicketCannotPushToAnotherApp(t *testing.T) {
+	fcm := &fakePusher{outcome: PushOutcome{Status: 202}}
+	h := fcmServer(t, &fakePusher{}, fcm).Handler()
+	ticket := registerFCM(t, h, alphaApp)
+	if rec := pushFor(h, t, betaApp, ticket); rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+	if fcm.calls != 0 {
+		t.Error("the FCM pusher was reached by a ticket of another app")
+	}
+}
+
+func TestFCMTicketIsRefusedOnceTheRelayStopsDeliveringToAndroid(t *testing.T) {
+	fcmH := fcmServer(t, &fakePusher{}, &fakePusher{outcome: PushOutcome{Status: 202}})
+	ticket := registerFCM(t, fcmH.Handler(), alphaApp)
+
+	// The same keys, a relay without an FCM pusher.
+	noFCM := NewServer(fcmH.apps, fcmH.ticketKeys, fcmH.ticketTTL, map[Platform]Pusher{PlatformAPNS: &fakePusher{}},
+		NewIPLimiters(generousIPLimits()), NewMetrics(), fcmH.log, 8192)
+	rec := pushFor(noFCM.Handler(), t, alphaApp, ticket)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 so the phone registers again", rec.Code)
+	}
+}
+
+func TestFCMOutcomesUseTheSameStatusCodes(t *testing.T) {
+	cases := []struct {
+		outcome PushOutcome
+		status  int
+		body    string
+	}{
+		{PushOutcome{Status: 410, Reason: "Unregistered"}, 410, "Unregistered"},
+		{PushOutcome{Status: 429, RetryAfter: 30 * time.Second}, 429, "30"},
+		{PushOutcome{Status: 502, Reason: "UNAVAILABLE"}, 502, "Google"},
+	}
+	for _, c := range cases {
+		h := fcmServer(t, &fakePusher{}, &fakePusher{outcome: c.outcome}).Handler()
+		rec := pushFor(h, t, alphaApp, registerFCM(t, h, alphaApp))
+		if rec.Code != c.status || !strings.Contains(rec.Body.String(), c.body) {
+			t.Errorf("%+v: status = %d, body = %q", c.outcome, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestFCMTicketsShareTheTicketRateLimits(t *testing.T) {
+	rl := generousRateLimits()
+	rl.AlertPerHour = 1
+	rl.AlertBurst = 1
+	server, _ := testServerWith(t, &fakePusher{}, serverOpts{ticket: rl, ip: generousIPLimits(), fcm: &fakePusher{outcome: PushOutcome{Status: 202}}})
+	h := server.Handler()
+	ticket := registerFCM(t, h, alphaApp)
+	if rec := pushFor(h, t, alphaApp, ticket); rec.Code != http.StatusAccepted {
+		t.Fatalf("first push: status = %d", rec.Code)
+	}
+	if rec := pushFor(h, t, alphaApp, ticket); rec.Code != http.StatusTooManyRequests {
+		t.Errorf("second push: status = %d, want 429", rec.Code)
+	}
+}
+
+func TestMetricsSeparateThePlatforms(t *testing.T) {
+	h := fcmServer(t, &fakePusher{}, &fakePusher{outcome: PushOutcome{Status: 202}}).Handler()
+	pushFor(h, t, alphaApp, registerFCM(t, h, alphaApp))
+
+	body := doJSON(t, h, "GET", "/metrics", nil).Body.String()
+	for _, want := range []string{
+		`pushrelay_register_total{app="alpha",platform="fcm",result="success"} 1`,
+		`pushrelay_push_total{app="alpha",platform="fcm",result="success",type="alert"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/metrics is missing %q", want)

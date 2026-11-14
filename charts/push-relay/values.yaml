@@ -27,6 +27,7 @@ replicaCount: 1
 #       payload_key: ex
 #       fallback_title: Example
 #       fallback_body: New notification
+#       android_package: com.example.app   # optional, needed to register Android devices
 config: {}
 
 apnsKey:
@@ -36,6 +37,14 @@ apnsKey:
   # values or a rendered template. Mounted where the default apns.key_path points.
   existingSecret: ""
   existingSecretKey: "AuthKey.p8"
+
+fcmKey:
+  # Optional. Name of a Secret holding the service-account JSON key of the Firebase project, which
+  # switches on delivery to Android through Firebase Cloud Messaging. Left empty, the relay serves
+  # iPhones only and refuses the `fcm` platform at registration. Managed like apnsKey: this chart
+  # never creates or touches the Secret. Mounted where fcm.key_path is pointed to.
+  existingSecret: ""
+  existingSecretKey: "service-account.json"
 
 ticketKeys:
   # Name of a Secret holding the ticket-signing keys, in the "<id>:<64 hex>,<id>:<64 hex>,..."

@@ -17,6 +17,8 @@ import (
 const (
 	minApnsTokenHexLen = 16
 	maxApnsTokenHexLen = 200
+	minFCMTokenLen     = 16
+	maxFCMTokenLen     = 512
 	maxCollapseIDBytes = 64
 	minTTLSeconds      = 0
 	maxTTLSeconds      = 86400
@@ -26,12 +28,12 @@ const (
 const appNone = "none"
 
 // Server holds everything an HTTP handler needs: the apps, the ticket keys, the rate limiters,
-// the pusher, and nothing else — there is no store, because this relay keeps none.
+// one pusher per platform the relay delivers on, and nothing else — there is no store, because this relay keeps none.
 type Server struct {
 	apps         *Apps
 	ticketKeys   *TicketKeys
 	ticketTTL    time.Duration
-	pusher       Pusher
+	pushers      map[Platform]Pusher
 	ip           *IPLimiters
 	metrics      *Metrics
 	log          *slog.Logger
@@ -39,12 +41,12 @@ type Server struct {
 	now          func() time.Time
 }
 
-func NewServer(apps *Apps, ticketKeys *TicketKeys, ticketTTL time.Duration, pusher Pusher, ip *IPLimiters, metrics *Metrics, log *slog.Logger, maxBodyBytes int64) *Server {
+func NewServer(apps *Apps, ticketKeys *TicketKeys, ticketTTL time.Duration, pushers map[Platform]Pusher, ip *IPLimiters, metrics *Metrics, log *slog.Logger, maxBodyBytes int64) *Server {
 	return &Server{
 		apps:         apps,
 		ticketKeys:   ticketKeys,
 		ticketTTL:    ticketTTL,
-		pusher:       pusher,
+		pushers:      pushers,
 		ip:           ip,
 		metrics:      metrics,
 		log:          log,
@@ -91,7 +93,10 @@ func (s *Server) Handler() http.Handler {
 // --- /v1/register ---
 
 type registerRequest struct {
-	App       string `json:"app"`
+	App      string `json:"app"`
+	Platform string `json:"platform"`
+	Token    string `json:"token"`
+	// ApnsToken is the pre-platform spelling of Token, valid for the apns platform only.
 	ApnsToken string `json:"apns_token"`
 }
 
@@ -107,48 +112,51 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	if !s.ip.Registrations.Allow(ip, now) {
 		s.metrics.RateLimitedTotal.WithLabelValues(appNone, "ip_register").Inc()
-		s.metrics.RegisterTotal.WithLabelValues(appNone, "ratelimited").Inc()
+		s.metrics.RegisterTotal.WithLabelValues(appNone, platformNone, "ratelimited").Inc()
 		writeRetryAfter(w, s.ip.Registrations.RetryAfter())
 		return
 	}
 
 	req, err := decodeJSONBody[registerRequest](w, r, s.maxBodyBytes)
 	if err != nil {
-		s.metrics.RegisterTotal.WithLabelValues(appNone, "invalid").Inc()
+		s.metrics.RegisterTotal.WithLabelValues(appNone, platformNone, "invalid").Inc()
 		writeDecodeError(w, err)
 		return
 	}
 	app, err := s.resolveApp(req.App)
 	if err != nil {
-		s.metrics.RegisterTotal.WithLabelValues(appNone, "invalid").Inc()
+		s.metrics.RegisterTotal.WithLabelValues(appNone, platformNone, "invalid").Inc()
+		writeStatusError(w, err)
+		return
+	}
+	platform, rawToken, err := registrationToken(req)
+	if err != nil {
+		s.metrics.RegisterTotal.WithLabelValues(app.Name, platformNone, "invalid").Inc()
+		writeStatusError(w, err)
+		return
+	}
+	// A platform the relay cannot deliver on yields no ticket: it would never work.
+	if _, ok := s.pushers[platform]; !ok || (platform == PlatformFCM && app.AndroidPackage == "") {
+		s.metrics.RegisterTotal.WithLabelValues(app.Name, platform.String(), "invalid").Inc()
+		http.Error(w, "platform is not available for this app", http.StatusBadRequest)
+		return
+	}
+	deviceToken, err := decodeToken(platform, rawToken)
+	if err != nil {
+		s.metrics.RegisterTotal.WithLabelValues(app.Name, platform.String(), "invalid").Inc()
 		writeStatusError(w, err)
 		return
 	}
 
-	token := strings.ToLower(strings.TrimSpace(req.ApnsToken))
-	if !isValidApnsTokenHex(token) {
-		s.metrics.RegisterTotal.WithLabelValues(app.Name, "invalid").Inc()
-		http.Error(w, "apns_token is required and must be a 16-200 character, even-length hex string", http.StatusBadRequest)
-		return
-	}
-	deviceToken, err := hex.DecodeString(token)
-	if err != nil {
-		// isValidApnsTokenHex already checked this, but never trust a decode to succeed just
-		// because a hand-written validator said so.
-		s.metrics.RegisterTotal.WithLabelValues(app.Name, "invalid").Inc()
-		http.Error(w, "apns_token is not valid hex", http.StatusBadRequest)
-		return
-	}
-
-	ticket, err := s.ticketKeys.Seal(app.ID, deviceToken, now)
+	ticket, err := s.ticketKeys.Seal(app.ID, platform, deviceToken, now)
 	if err != nil {
 		s.log.Error("register: could not seal ticket", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
-	s.metrics.RegisterTotal.WithLabelValues(app.Name, "success").Inc()
-	s.log.Info("register", "app", app.Name, "ticket_id", TicketID(ticket), "result", "success")
+	s.metrics.RegisterTotal.WithLabelValues(app.Name, platform.String(), "success").Inc()
+	s.log.Info("register", "app", app.Name, "platform", platform.String(), "ticket_id", TicketID(ticket), "result", "success")
 
 	writeJSON(w, http.StatusOK, registerResponse{
 		Ticket:    ticket,
@@ -209,7 +217,7 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrTicketExpired) {
 			reason = "TicketExpired"
 		}
-		s.metrics.PushTotal.WithLabelValues(app.Name, req.Type, "invalid_ticket").Inc()
+		s.metrics.PushTotal.WithLabelValues(app.Name, platformNone, req.Type, "invalid_ticket").Inc()
 		s.log.Info("push", "app", app.Name, "ticket_id", ticketID, "result", "invalid_ticket")
 		writeJSON(w, http.StatusUnauthorized, reasonResponse{Reason: reason})
 		return
@@ -222,35 +230,44 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 		ticketApp, _ = s.apps.ByID(opened.App)
 	}
 	if ticketApp != app {
-		s.metrics.PushTotal.WithLabelValues(app.Name, req.Type, "app_mismatch").Inc()
-		s.log.Info("push", "app", app.Name, "ticket_id", ticketID, "result", "app_mismatch")
+		s.metrics.PushTotal.WithLabelValues(app.Name, opened.Platform.String(), req.Type, "app_mismatch").Inc()
+		s.log.Info("push", "app", app.Name, "platform", opened.Platform.String(), "ticket_id", ticketID, "result", "app_mismatch")
 		writeJSON(w, http.StatusUnauthorized, reasonResponse{Reason: "InvalidTicket"})
 		return
 	}
 
 	if !s.ip.Pushes.Allow(ip, now) {
-		s.respondRateLimited(w, app, "ip_push", req.Type, ticketID, s.ip.Pushes)
+		s.respondRateLimited(w, app, opened.Platform, "ip_push", req.Type, ticketID, s.ip.Pushes)
 		return
 	}
 
 	limiters := app.Limiters
 	if req.Type == "alert" {
 		if !limiters.Alert.Allow(ticketID, now) {
-			s.respondRateLimited(w, app, "ticket_alert", req.Type, ticketID, limiters.Alert)
+			s.respondRateLimited(w, app, opened.Platform, "ticket_alert", req.Type, ticketID, limiters.Alert)
 			return
 		}
 		if !limiters.AlertDaily.Allow(ticketID, now) {
-			s.respondRateLimited(w, app, "ticket_alert_daily", req.Type, ticketID, limiters.AlertDaily)
+			s.respondRateLimited(w, app, opened.Platform, "ticket_alert_daily", req.Type, ticketID, limiters.AlertDaily)
 			return
 		}
 	} else {
 		if !limiters.Background.Allow(ticketID, now) {
-			s.respondRateLimited(w, app, "ticket_background", req.Type, ticketID, limiters.Background)
+			s.respondRateLimited(w, app, opened.Platform, "ticket_background", req.Type, ticketID, limiters.Background)
 			return
 		}
 	}
 
-	outcome := s.pusher.Push(r.Context(), PushRequest{
+	pusher, ok := s.pushers[opened.Platform]
+	if !ok || (opened.Platform == PlatformFCM && app.AndroidPackage == "") {
+		// The ticket is genuine but this relay no longer delivers on its platform for this app:
+		// the phone registers again, and that is refused with the reason.
+		s.metrics.PushTotal.WithLabelValues(app.Name, opened.Platform.String(), req.Type, "invalid_ticket").Inc()
+		s.log.Info("push", "app", app.Name, "platform", opened.Platform.String(), "ticket_id", ticketID, "result", "platform_unavailable")
+		writeJSON(w, http.StatusUnauthorized, reasonResponse{Reason: "InvalidTicket"})
+		return
+	}
+	outcome := pusher.Push(r.Context(), PushRequest{
 		App:         app,
 		DeviceToken: opened.DeviceToken,
 		Kind:        req.Type,
@@ -260,8 +277,13 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	})
 
 	result := resultLabel(outcome.Status)
-	s.metrics.PushTotal.WithLabelValues(app.Name, req.Type, result).Inc()
-	s.log.Info("push", "app", app.Name, "ticket_id", ticketID, "result", result)
+	s.metrics.PushTotal.WithLabelValues(app.Name, opened.Platform.String(), req.Type, result).Inc()
+	if outcome.Status == 502 && outcome.Reason != "" {
+		// Pushers only ever put a short, device-free reason here (never an error's own text).
+		s.log.Info("push", "app", app.Name, "platform", opened.Platform.String(), "ticket_id", ticketID, "result", result, "reason", outcome.Reason)
+	} else {
+		s.log.Info("push", "app", app.Name, "platform", opened.Platform.String(), "ticket_id", ticketID, "result", result)
+	}
 
 	switch outcome.Status {
 	case 202:
@@ -271,14 +293,14 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	case 429:
 		writeRetryAfter(w, outcome.RetryAfter)
 	default:
-		http.Error(w, "push to Apple failed", http.StatusBadGateway)
+		http.Error(w, "push to "+opened.Platform.Provider()+" failed", http.StatusBadGateway)
 	}
 }
 
-func (s *Server) respondRateLimited(w http.ResponseWriter, app *App, scope, pushType, ticketID string, limiter *keyedLimiter) {
+func (s *Server) respondRateLimited(w http.ResponseWriter, app *App, platform Platform, scope, pushType, ticketID string, limiter *keyedLimiter) {
 	s.metrics.RateLimitedTotal.WithLabelValues(app.Name, scope).Inc()
-	s.metrics.PushTotal.WithLabelValues(app.Name, pushType, "ratelimited").Inc()
-	s.log.Info("push", "app", app.Name, "ticket_id", ticketID, "result", "ratelimited", "scope", scope)
+	s.metrics.PushTotal.WithLabelValues(app.Name, platform.String(), pushType, "ratelimited").Inc()
+	s.log.Info("push", "app", app.Name, "platform", platform.String(), "ticket_id", ticketID, "result", "ratelimited", "scope", scope)
 	writeRetryAfter(w, limiter.RetryAfter())
 }
 
@@ -380,6 +402,61 @@ func writeRetryAfter(w http.ResponseWriter, d time.Duration) {
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+// registrationToken resolves which platform a registration is for and the raw token it carries,
+// accepting the pre-platform `apns_token` spelling for apns only.
+func registrationToken(req registerRequest) (Platform, string, error) {
+	platform, ok := ParsePlatform(req.Platform)
+	if !ok {
+		return 0, "", errBadRequest("platform must be \"apns\" or \"fcm\"")
+	}
+	token := req.Token
+	if req.ApnsToken != "" {
+		if token != "" || platform != PlatformAPNS {
+			return 0, "", errBadRequest("apns_token is only valid on its own for the apns platform")
+		}
+		token = req.ApnsToken
+	}
+	return platform, token, nil
+}
+
+// decodeToken validates a registration token for its platform and returns the bytes a ticket
+// seals. This endpoint has no auth in front of it, so this validation is the only thing standing
+// between it and arbitrary junk being sealed into a ticket.
+func decodeToken(platform Platform, raw string) ([]byte, error) {
+	token := strings.TrimSpace(raw)
+	if platform == PlatformFCM {
+		if !isValidFCMToken(token) {
+			return nil, errBadRequest("token is required and must be a 16-512 character string of letters, digits, - _ and :")
+		}
+		return []byte(token), nil
+	}
+	token = strings.ToLower(token)
+	if !isValidApnsTokenHex(token) {
+		return nil, errBadRequest("apns_token is required and must be a 16-200 character, even-length hex string")
+	}
+	deviceToken, err := hex.DecodeString(token)
+	if err != nil {
+		// isValidApnsTokenHex already checked this, but never trust a decode to succeed just
+		// because a hand-written validator said so.
+		return nil, errBadRequest("apns_token is not valid hex")
+	}
+	return deviceToken, nil
+}
+
+// isValidFCMToken accepts what FCM registration tokens and Firebase installation ids are made
+// of — url-safe base64 characters and the colon between a token's two halves — and nothing else.
+func isValidFCMToken(s string) bool {
+	if len(s) < minFCMTokenLen || len(s) > maxFCMTokenLen {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' || c == '_' || c == ':') {
+			return false
+		}
+	}
+	return true
 }
 
 // isValidApnsTokenHex accepts what an APNs device token actually looks like — an even-length hex

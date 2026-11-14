@@ -30,6 +30,11 @@ type Config struct {
 	APNSKeyPath     string
 	APNSSendTimeout time.Duration
 
+	// FCM is optional: an empty FCMKeyPath leaves Android unavailable.
+	FCMKeyPath     string
+	FCMAPIBase     string
+	FCMSendTimeout time.Duration
+
 	// TicketKeys seals and opens push tickets. The first configured key is the one new tickets
 	// are sealed with; every configured key is tried when opening one.
 	TicketKeys *TicketKeys
@@ -50,6 +55,11 @@ type rawConfig struct {
 		KeyPath            string `yaml:"key_path"`
 		SendTimeoutSeconds int    `yaml:"send_timeout_seconds"`
 	} `yaml:"apns"`
+	FCM struct {
+		KeyPath            string `yaml:"key_path"`
+		APIBase            string `yaml:"api_base"`
+		SendTimeoutSeconds int    `yaml:"send_timeout_seconds"`
+	} `yaml:"fcm"`
 	Tickets struct {
 		Keys      string `yaml:"keys"`
 		TTLDays   int    `yaml:"ttl_days"`
@@ -72,12 +82,13 @@ type rawAppLimits struct {
 }
 
 type rawApp struct {
-	ID            int          `yaml:"id"`
-	Topic         string       `yaml:"topic"`
-	PayloadKey    string       `yaml:"payload_key"`
-	FallbackTitle string       `yaml:"fallback_title"`
-	FallbackBody  string       `yaml:"fallback_body"`
-	Limits        rawAppLimits `yaml:"limits"`
+	ID             int          `yaml:"id"`
+	Topic          string       `yaml:"topic"`
+	PayloadKey     string       `yaml:"payload_key"`
+	FallbackTitle  string       `yaml:"fallback_title"`
+	FallbackBody   string       `yaml:"fallback_body"`
+	AndroidPackage string       `yaml:"android_package"`
+	Limits         rawAppLimits `yaml:"limits"`
 }
 
 var (
@@ -261,6 +272,16 @@ func buildConfig(raw rawConfig) (Config, error) {
 		return Config{}, err
 	}
 	cfg.APNSSendTimeout = time.Duration(raw.APNS.SendTimeoutSeconds) * time.Second
+
+	if strings.TrimSpace(raw.FCM.APIBase) == "" {
+		return Config{}, fmt.Errorf("fcm.api_base is required and must not be empty")
+	}
+	if err := positive("fcm.send_timeout_seconds", raw.FCM.SendTimeoutSeconds); err != nil {
+		return Config{}, err
+	}
+	cfg.FCMKeyPath = strings.TrimSpace(raw.FCM.KeyPath)
+	cfg.FCMAPIBase = raw.FCM.APIBase
+	cfg.FCMSendTimeout = time.Duration(raw.FCM.SendTimeoutSeconds) * time.Second
 
 	if strings.TrimSpace(raw.Tickets.Keys) == "" {
 		return Config{}, fmt.Errorf("tickets.keys is required and must not be empty")

@@ -38,9 +38,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	pushers := map[Platform]Pusher{PlatformAPNS: pusher}
+	if cfg.FCMKeyPath != "" {
+		fcm, err := NewFCMPusher(cfg.FCMKeyPath, cfg.FCMAPIBase, cfg.FCMSendTimeout)
+		if err != nil {
+			log.Error("could not build FCM client", "error", err)
+			os.Exit(1)
+		}
+		pushers[PlatformFCM] = fcm
+	}
+
 	metrics := NewMetrics()
 	ip := NewIPLimiters(cfg.IP)
-	server := NewServer(cfg.Apps, cfg.TicketKeys, cfg.TicketTTL, pusher, ip, metrics, log, cfg.MaxBodyBytes)
+	server := NewServer(cfg.Apps, cfg.TicketKeys, cfg.TicketTTL, pushers, ip, metrics, log, cfg.MaxBodyBytes)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -55,7 +65,7 @@ func main() {
 		for _, app := range cfg.Apps.All() {
 			apps = append(apps, app.Name)
 		}
-		log.Info("listening", "addr", cfg.ListenAddr, "apps", apps)
+		log.Info("listening", "addr", cfg.ListenAddr, "apps", apps, "fcm", cfg.FCMKeyPath != "")
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("http server failed", "error", err)
 			stop()
