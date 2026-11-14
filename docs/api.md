@@ -5,13 +5,19 @@ plain-text message rather than a JSON body; every other response shown below is 
 
 A relay serves one or more **apps**. An app is what a caller names in the `app` field, and it
 decides the APNs topic, the banner Apple shows before the app's own notification extension
-replaces it, and the key under which the blob reaches that extension. Which apps a relay serves
-is configuration ([operations.md](operations.md)).
+replaces it, the key under which the blob reaches that extension and, for an app that also runs
+on Android, its package name. Which apps a relay serves is configuration
+([operations.md](operations.md)).
+
+A relay delivers through one or two **platforms**: `apns` (iPhone, always) and `fcm` (Android
+through Firebase Cloud Messaging, only when the relay was given a Firebase service-account key).
+A ticket is bound to the platform its device registered on.
 
 ## Shape
 
 - **No authentication header.** A sealed, expiring *ticket* issued by `/v1/register` is the only
-  credential a caller presents. It authorizes exactly one APNs device token of exactly one app.
+  credential a caller presents. It authorizes exactly one device token of exactly one app and
+  platform.
   There is no account, API key or sign-up with the relay operator: the phone registers directly.
 - **Nothing is stored.** No database, no volume. A ticket is self-contained, sealed with a key
   only the relay holds. Restarting the relay invalidates nothing; dropping a signing key makes
@@ -25,13 +31,13 @@ is configuration ([operations.md](operations.md)).
 
 ## Registration handshake
 
-- A phone registers its APNs device token with the relay directly: `POST /v1/register`, naming its
-  app.
-- The relay returns a ticket bound to that app and token, with an expiry.
+- A phone registers its push token with the relay directly (an APNs device token, or an FCM
+  registration token): `POST /v1/register`, naming its app and platform.
+- The relay returns a ticket bound to that app, platform and token, with an expiry.
 - The phone hands the ticket (and a content key it generated itself, which never reaches the
   relay) to its own server.
 - The server calls `POST /v1/push` with that ticket whenever it has something to deliver. The
-  relay opens the ticket, recovers the device token and forwards the push to Apple. It never sees
+  relay opens the ticket, recovers the token and forwards the push to Apple or Google. It never sees
   which server sent it beyond the caller's IP address, and never sees why.
 - There is no unregister endpoint: a ticket stops working when it expires or its signing key is
   dropped, and a server stops pushing to a device when the phone stops refreshing its ticket
@@ -42,11 +48,17 @@ is configuration ([operations.md](operations.md)).
 Request:
 
 ```json
-{"app": "<app name>", "apns_token": "<hex device token, 16-200 characters, even length>"}
+{"app": "<app name>", "platform": "apns", "token": "<platform token>"}
 ```
 
-`app` may be left out only when the relay is configured with a legacy app (see
-[operations.md](operations.md)); it then means that app.
+- `platform` is `"apns"` or `"fcm"`; left out it means `"apns"`.
+- `token` for `apns` is a hex device token, 16-200 characters, even length. For `fcm` it is the
+  registration token (or Firebase installation id) the Firebase SDK hands the app: 16-512
+  characters of letters, digits, `-`, `_` and `:`. The relay treats it as opaque.
+- `apns_token` is accepted in place of `token` for `apns` registrations (the form every build
+  before FCM support sends); it must not be combined with `token` or with another platform.
+- `app` may be left out only when the relay is configured with a legacy app (see
+  [operations.md](operations.md)); it then means that app.
 
 Response `200`:
 
@@ -62,8 +74,9 @@ Response `200`:
 
 Errors:
 
-- `400` — `app` unknown or (without a legacy app) missing, `apns_token` missing, the wrong
-  length, or not a hex string.
+- `400` — `app` unknown or (without a legacy app) missing, `platform` unknown, the token missing,
+  malformed or sent in two fields, or the platform not available: `fcm` on a relay without a
+  Firebase key, or for an app that has no Android package.
 - `429` — rate limited; retry later.
 
 ## `POST /v1/push`
@@ -85,14 +98,30 @@ Request:
 wake-up, no `blob`). `ttl_seconds` is `0`-`86400`; `0` asks Apple for best-effort,
 immediate-or-never delivery rather than a held, retried one.
 
-An alert reaches the phone as a notification titled and worded by the app's fallback text, marked
-`mutable-content`, with `{"v": 1, "b": "<blob>"}` under the app's payload key.
+On `apns`, an alert reaches the phone as a notification titled and worded by the app's fallback
+text, marked `mutable-content`, with `{"v": 1, "b": "<blob>"}` under the app's payload key; a
+`background` push is a silent `content-available` one.
+
+On `fcm`, the push is a data-only message (no notification part, so the app always builds the
+notification itself from the decrypted blob), restricted to the app's Android package:
+
+| | `alert` | `background` |
+|---|---|---|
+| data | `{"type": "alert", "v": "1", "b": "<blob>"}` | `{"type": "background", "v": "1"}` |
+| FCM priority | `HIGH` | `NORMAL` |
+| `ttl` | `ttl_seconds` | `ttl_seconds` |
+| `collapse_key` | none | `collapse_id`, when given |
+
+An alert is never collapsed: FCM keeps at most four distinct collapse keys per device, so a key
+per alert would let pending alerts fall away.
 
 Response `202`:
 
 ```json
-{"apns_id": "<Apple's own identifier for the accepted push>"}
+{"apns_id": "<the platform's own identifier for the accepted push>"}
 ```
+
+`apns_id` is Apple's identifier for an `apns` push and FCM's message name for an `fcm` one.
 
 Errors:
 
@@ -101,26 +130,28 @@ Errors:
 - `401` — `{"reason": "InvalidTicket"}` (cannot be opened, was signed by a since-dropped key, or
   belongs to a different app than the request names) or `{"reason": "TicketExpired"}`. Either
   means: stop retrying this push and have the phone register again.
-- `410` — `{"reason": "Unregistered" | "BadDeviceToken" | "DeviceTokenNotForTopic"}`. Apple has
-  said this device token will never accept another push. Delete whatever local subscription
-  record the ticket belongs to.
+- `410` — `{"reason": "Unregistered" | "BadDeviceToken" | "DeviceTokenNotForTopic"}`. Apple or
+  Google has said this device token will never accept another push (for `fcm`: the token is
+  unregistered, malformed, or belongs to another app than the Android package). Delete whatever
+  local subscription record the ticket belongs to.
 - `413` — the request body, or `blob`, exceeded the size limits.
 - `429` — `{"retry_after_seconds": <int>}`. The ticket or the caller's IP address hit a rate
   limit; back off for at least that long. Transient: retry later, don't drop anything.
-- `502` — Apple's API itself failed or timed out. Transient: retry with backoff.
+- `502` — Apple's or Google's API itself failed or timed out, or the relay's credential for it was
+  refused. Transient: retry with backoff.
 
 ## `GET /healthz`
 
-`200` with a plain-text body once the process is up. There is nothing to check besides Apple's
-API, which is only called per request.
+`200` with a plain-text body once the process is up. There is nothing to check besides Apple's and
+Google's APIs, which are only called per request.
 
 ## `GET /metrics`
 
 Prometheus text format; every series carries the `app` it belongs to, or `none` when the request
 never resolved to an app:
 
-- `pushrelay_push_total{app, type="alert|background", result="success|gone|ratelimited|failure|invalid_ticket|app_mismatch"}`
-- `pushrelay_register_total{app, result="success|invalid|ratelimited"}`
+- `pushrelay_push_total{app, platform="apns|fcm", type="alert|background", result="success|gone|ratelimited|failure|invalid_ticket|app_mismatch"}`
+- `pushrelay_register_total{app, platform="apns|fcm|none", result="success|invalid|ratelimited"}`
 - `pushrelay_ratelimited_total{app, scope="ticket_alert|ticket_alert_daily|ticket_background|ip_push|ip_register"}`
 
 ## Rate limits
@@ -147,7 +178,15 @@ apply its own, coarser rate limiting; that is a second, independent layer.
 
 ## Tickets
 
-A ticket is `version | key id | nonce | AES-256-GCM(app id | token length | device token | issued-at)`,
-base64url without padding. Version 2 binds the app id into the authenticated plaintext and uses
-its own AAD, so a ticket never opens as another version. Version 1 tickets (no app id) open only
-when a legacy app is configured, and belong to that app.
+A ticket is `version | key id | nonce | AES-256-GCM(plaintext)`, base64url without padding. Every
+version has its own AAD, so a ticket never opens as another version.
+
+- Version 1: `token length | device token | issued-at`. No app id; opens only when a legacy app is
+  configured, and belongs to that app.
+- Version 2: `app id | token length | device token | issued-at`. An APNs ticket; the app id is
+  authenticated.
+- Version 3: `app id | platform | token length (2 bytes) | token | issued-at`. Issued for every
+  platform but `apns`, whose tickets stay version 2; a version 3 ticket also opens with the
+  platform `apns`.
+
+Callers never parse a ticket, so the platform needs no field of their own.
